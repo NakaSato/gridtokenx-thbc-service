@@ -125,10 +125,16 @@ impl LedgerPort for ChainBridgeLedger {
         _amount: Thb,
         _nullifier: BankRefHash,
     ) -> PortResult<ConfirmOutcome> {
+        // `issue_thbc` and its `[b"deposit", H(bank_ref)]` nullifier now EXIST on-chain
+        // (gridtokenx-anchor a554499). What is missing is the Chain Bridge route: this
+        // service never builds Solana transactions itself — it publishes intents to
+        // NATS and the bridge encodes them — and the bridge has no handler for this
+        // instruction yet. Distinct from "the instruction does not exist", which is
+        // what this said before.
         Err(PortError::Unsupported(
-            "issue_thbc does not exist in the treasury program, and neither does the \
-             [b\"deposit\", H(bank_ref)] nullifier it must create (spec §12). Routing this \
-             to swap_grx_for_thbc would mint against GRX collateral and violate F6",
+            "issue_thbc exists on-chain but Chain Bridge has no route for it yet: this \
+             service publishes intents and never encodes transactions itself. Wiring a \
+             chain.tx.* subject and a bridge handler is what unblocks this",
         ))
     }
 

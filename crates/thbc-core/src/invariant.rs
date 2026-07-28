@@ -76,22 +76,20 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F1",
         name: "Reserve sufficiency",
         statement: "thbc_supply <= attested_reserve - reserve_encumbered at all times",
-        // The ceiling USED to be enforced by `compute_swap_grx_for_thbc`
-        // (`TreasuryError::PegBreach`). The F6 fix removed that instruction, and with
-        // it the only caller — `PegBreach` now has zero call sites and
-        // `attested_reserve` is written by `update_attestation` but never read for a
-        // check.
+        // Re-attached to `issue_thbc` (gridtokenx-anchor a554499), the only instruction
+        // that increases supply. `PegBreach` has a call site again — it had none
+        // between the F6 fix and that commit.
         //
-        // F1 is currently VACUOUS rather than enforced: no program mints THBC at all,
-        // so supply cannot grow past anything. That is not the same as a guarantee,
-        // and the ceiling must be re-attached to `issue_thbc` when it lands.
-        status: Status::DesignOnly,
-        enforcement: Enforcement::Unenforced,
+        // Still `Partial`: the on-chain ceiling is `attested_reserve`, NOT
+        // `attested_reserve - reserve_encumbered` as §4.1 specifies, because that field
+        // does not fit in the 14 spare padding bytes on the zero-copy `Treasury`.
+        status: Status::Partial,
+        enforcement: Enforcement::OnChain,
         gap: Some(
-            "vacuously true, not enforced: no program mints THBC, so supply cannot grow — \
-             but `PegBreach` has no call site since the minting swap was removed, and \
-             `reserve_encumbered` still is not an on-chain field. `issue_thbc` must \
-             re-attach the ceiling as `attested_reserve - reserve_encumbered`",
+            "on-chain ceiling is `attested_reserve`, not `attested_reserve - \
+             reserve_encumbered`: fiat that cleared the bank and then failed KYC still \
+             counts as free backing on-chain. This service enforces the tighter ceiling \
+             from its own records and is therefore stricter than the chain",
         ),
     },
     Invariant {
@@ -112,13 +110,17 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F3",
         name: "Deposit idempotency",
         statement: "one confirmed bank_ref => at most one issuance",
-        status: Status::DesignOnly,
-        enforcement: Enforcement::Unenforced,
-        gap: Some(
-            "the `[b\"deposit\", H(bank_ref)]` nullifier PDA does not exist on-chain. \
-             This service dedupes on a UNIQUE index over bank_ref_hash, which stops \
-             replays through this service and nothing else",
-        ),
+        // `issue_thbc` creates `[b"deposit", H(bank_ref)]` with Anchor `init` in the
+        // SAME instruction as the mint (gridtokenx-anchor a554499). A replay is
+        // rejected by the Solana runtime at the account level, before any program code
+        // runs — so no application bug can defeat it, and the mint and the nullifier
+        // either both happen or neither does.
+        //
+        // `Runtime`, not `OnChain`: the guarantee comes from account existence, not
+        // from a `require!` the program could get wrong.
+        status: Status::Enforced,
+        enforcement: Enforcement::Runtime,
+        gap: None,
     },
     Invariant {
         id: "F4",
@@ -138,25 +140,15 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F5",
         name: "Attestation freshness",
         statement: "now - attestation_ts <= attestation_ttl, else issuance halts",
-        // WAS Enforced, by the freshness check in `swap_grx_for_thbc`. The F6 fix
-        // removed that instruction, and the check went with it — deliberately: F5
-        // guards *issuance*, and the replacement `exchange_*` path issues nothing, so
-        // keeping it there would have cost liveness and protected nothing.
+        // Re-attached to `issue_thbc` (gridtokenx-anchor a554499) — the instruction F5
+        // actually exists to gate. `StaleAttestation` has a call site again; it had
+        // none between the F6 fix and that commit.
         //
-        // The consequence is that `StaleAttestation` now has zero call sites. F5 is
-        // unreachable rather than violated — nothing issues, so nothing can issue
-        // against a stale reserve — but an unreachable guard is not a guarantee, and
-        // this must be re-attached to `issue_thbc`.
-        //
-        // This is the registry doing its job: F5 was claimable before 2026-07-29 and
-        // is not any more, and that had to be visible rather than assumed.
-        status: Status::DesignOnly,
-        enforcement: Enforcement::Unenforced,
-        gap: Some(
-            "unreachable, not enforced: the freshness check lived on the minting swap \
-             and was removed with it. `StaleAttestation` has no call site. `issue_thbc` \
-             must carry the check, since that is the instruction F5 exists to gate",
-        ),
+        // Checked BEFORE the F1 ceiling, and a future-dated attestation is rejected
+        // rather than treated as maximally fresh, so clock skew cannot buy freshness.
+        status: Status::Enforced,
+        enforcement: Enforcement::OnChain,
+        gap: None,
     },
     Invariant {
         id: "F6",
@@ -270,12 +262,13 @@ mod tests {
         // Guards against someone flipping a status to make a dashboard green.
         // Flip these deliberately, together with §12 of the spec, when the on-chain
         // work actually lands.
-        assert_eq!(get("F3").unwrap().status, Status::DesignOnly);
         assert_eq!(get("F7").unwrap().status, Status::DesignOnly);
-        // F1 and F5 became unenforceable when the F6 fix removed the minting swap that
-        // carried their guards. Both must be re-attached to `issue_thbc`.
-        assert_eq!(get("F1").unwrap().status, Status::DesignOnly);
-        assert_eq!(get("F5").unwrap().status, Status::DesignOnly);
+        // F1/F3/F5 were re-attached to `issue_thbc`. F3 is Enforced by the RUNTIME
+        // (account existence), which is stronger than a program-level check.
+        assert_eq!(get("F1").unwrap().status, Status::Partial);
+        assert_eq!(get("F3").unwrap().status, Status::Enforced);
+        assert_eq!(get("F3").unwrap().enforcement, Enforcement::Runtime);
+        assert_eq!(get("F5").unwrap().status, Status::Enforced);
         // F6 moved Violated -> Partial when the on-chain exchange path stopped
         // minting (2026-07-29). It is NOT Enforced: legacy GRX-backed supply from the
         // old `swap_grx_for_thbc` may still be outstanding.
@@ -296,11 +289,10 @@ mod tests {
     }
 
     #[test]
-    fn disclosed_gaps_are_the_seven_open_invariants() {
-        // F1..F7 are all short of Enforced. Only F8 and F9 may be stated as
-        // guarantees, and both are structural rather than instruction-level — which
-        // is precisely why they survived the removal of the minting swap.
+    fn disclosed_gaps_are_the_five_open_invariants() {
+        // F1, F2, F4, F6, F7 remain short of Enforced.
+        // F3, F5, F8, F9 are claimable — up from F8/F9 before `issue_thbc` landed.
         let gaps: Vec<_> = disclosed_gaps().iter().map(|i| i.id).collect();
-        assert_eq!(gaps, ["F1", "F2", "F3", "F4", "F5", "F6", "F7"]);
+        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F7"]);
     }
 }

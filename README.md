@@ -23,15 +23,20 @@ program (spec §12). This service models them correctly and executes them agains
 simulator; in `chain-bridge` mode it returns `501 not_implemented` for those routes,
 which is the accurate answer.
 
-Of the nine invariants, **only F8 and F9 may be described as guarantees.**
+Of the nine invariants, **F3, F5, F8 and F9 may be described as guarantees.**
 
-F6 — the exchange path minting THBC against GRX — was fixed on-chain on 2026-07-29:
+Two on-chain changes landed on 2026-07-29. **F6**: the exchange path stopped minting —
 `swap_grx_for_thbc`/`redeem_thbc_for_grx` became `exchange_grx_for_thbc`/
-`exchange_thbc_for_grx`, which transfer against an inventory vault. **No program mints
-or burns THBC any more.** That fix also removed the only call sites of the F1 ceiling
-and the F5 freshness check, since both lived on the minting swap — so F1 and F5 are now
-*vacuous rather than enforced*, and must be re-attached to `issue_thbc`. F5 was
-claimable before that change and is not now.
+`exchange_thbc_for_grx`, transferring against an inventory vault. **`issue_thbc`**: the
+on-ramp, which re-attached the F1 ceiling and the F5 freshness check (both had lived on
+the swap the F6 fix deleted, and were briefly enforced by nothing) and implemented F3 —
+the `[b"deposit", H(bank_ref)]` nullifier is created with `init` in the same instruction
+as the mint, so a replayed webhook is rejected by the **runtime**, before any program
+code runs.
+
+Still not claimable: F1 (the on-chain ceiling omits `reserve_encumbered`), F2
+(detective, not preventive), F4 (no fiat rail to test against), F6 (code fixed, but
+legacy GRX-backed supply may be outstanding), F7 (escrow not built).
 
 The authoritative, machine-readable status is:
 
@@ -45,7 +50,7 @@ curl localhost:4008/v1/admin/invariants
 
 ```bash
 cd gridtokenx-thbc-service
-cargo test                                  # 149 tests, no infrastructure needed
+cargo test                                  # 154 tests, no infrastructure needed
 
 cp .env.example .env
 THBC_LEDGER_MODE=simulated \
