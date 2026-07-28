@@ -80,8 +80,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Async traits
 async-trait = "0.1"
 
+# Stream combinators — needed to await a reply off a NATS Subscriber, which
+# implements Stream and has no inherent `next()`.
+futures = "0.3"
+
 # Messaging — Chain Bridge is reached over NATS JetStream, never Solana RPC.
 async-nats = "0.37"
+
+# The `chain.tx.*` wire schema + envelope signing, shared with Chain Bridge so
+# the publisher and the verifier cannot drift.
+#
+# This does NOT compromise the "chain-light" property: `blockchain-types` is the
+# deliberately-extracted light half of `gridtokenx-blockchain-core` and depends
+# only on serde/base64/p256/sha2/anyhow/tracing — no solana-sdk, no anchor, no
+# SPL, no tonic. F8's structural claim (this service holds no key that can move
+# user funds) is untouched. `gridtokenx-aggregator-bridge` made the same call for
+# the same reason, replacing a byte-for-byte local mirror of these types; do not
+# re-create that mirror here.
+gridtokenx-blockchain-types = { path = "../gridtokenx-blockchain-core/crates/blockchain-types" }
 
 # Hashing — bank_ref nullifier seed (F3)
 sha2 = "0.10"

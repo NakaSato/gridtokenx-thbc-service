@@ -85,6 +85,21 @@ pub trait LedgerPort: Send + Sync {
     /// the *same* instruction as the mint, so a replay reverts at the account level
     /// (F3). An implementation that creates it in a separate transaction has not
     /// implemented F3.
+    ///
+    /// `beneficiary` is the recipient's **owner wallet** (base58), NOT an IAM user
+    /// id and NOT a token account:
+    ///
+    /// * Not a user id, because nothing on-chain can be derived from one and this
+    ///   service holds no IAM client to resolve it.
+    /// * Not a token account, because the on-chain account is constrained by
+    ///   `token::mint = thbc_mint` alone — that checks the mint, not that the
+    ///   account's owner is the beneficiary — so a supplied token account would be
+    ///   an unvalidated destination. The implementation derives the associated
+    ///   token account from this owner under the mint's own token program.
+    ///
+    /// Returning [`ConfirmOutcome::Submitted`] means the outcome is **unknown**,
+    /// not failed. Callers must not retry on it: the `init`-created nullifier makes
+    /// a retry of an issuance that actually landed fail permanently.
     async fn issue(
         &self,
         beneficiary: &str,

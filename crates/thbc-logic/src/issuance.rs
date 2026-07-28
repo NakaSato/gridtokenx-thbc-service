@@ -95,9 +95,10 @@ impl IssuanceService {
         bank_ref: BankRef,
         amount: Thb,
         beneficiary: &str,
+        beneficiary_wallet: &str,
     ) -> PortResult<IssuanceOutcome> {
         let now = self.clock.now();
-        let deposit = Deposit::observe(bank_ref, amount, beneficiary, now)?;
+        let deposit = Deposit::observe(bank_ref, amount, beneficiary, beneficiary_wallet, now)?;
         let nullifier = deposit.nullifier();
 
         // ---- Step 2: record the observation. Off-chain F3. ------------------
@@ -162,7 +163,13 @@ impl IssuanceService {
         self.deposits.update(&deposit).await?;
 
         // ---- Step 5: issue --------------------------------------------------
-        let outcome = self.ledger.issue(beneficiary, amount, nullifier).await?;
+        //
+        // The ledger gets the beneficiary's WALLET, not the IAM user id: nothing
+        // on-chain can be derived from the latter.
+        let outcome = self
+            .ledger
+            .issue(beneficiary_wallet, amount, nullifier)
+            .await?;
         match outcome {
             ConfirmOutcome::Confirmed => {
                 deposit.mark_issued()?;
@@ -211,9 +218,11 @@ impl IssuanceService {
         deposit.mark_attested()?;
         self.deposits.update(&deposit).await?;
 
+        // The wallet was captured on the original webhook and stored, so a retry
+        // needs nothing from the partner.
         let outcome = self
             .ledger
-            .issue(&deposit.beneficiary, deposit.amount, nullifier)
+            .issue(&deposit.beneficiary_wallet, deposit.amount, nullifier)
             .await?;
         if outcome == ConfirmOutcome::Confirmed {
             deposit.mark_issued()?;

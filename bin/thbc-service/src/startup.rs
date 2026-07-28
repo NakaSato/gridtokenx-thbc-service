@@ -75,9 +75,9 @@ pub async fn build(config: &Config) -> Result<AppState> {
             .map_err(|e| anyhow::anyhow!("connect to Chain Bridge: {e}"))?;
             info!(nats = %config.nats_url, "ledger: Chain Bridge");
             warn!(
-                "issue_thbc, redeem_thbc_for_fiat, confirm_redemption, reclaim_redemption \
-                 and the deposit nullifier do not exist on-chain (spec §12). Those routes \
-                 will return 501 not_implemented."
+                "redeem_thbc_for_fiat, confirm_redemption and reclaim_redemption have no \
+                 Chain Bridge route yet — those routes return 501 not_implemented. \
+                 issue_thbc and update_attestation are live."
             );
             Arc::new(bridge)
         }

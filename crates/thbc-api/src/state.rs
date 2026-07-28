@@ -100,6 +100,15 @@ impl From<CoreError> for ApiError {
             }
             CoreError::Paused => (StatusCode::SERVICE_UNAVAILABLE, "paused"),
 
+            // 422, not 400: the payload is well-formed, it just cannot be acted
+            // on. Matches the same rejection the partner handler raises before
+            // the deposit is recorded — this arm covers any path that reaches
+            // `Deposit::observe` without going through it.
+            CoreError::MissingBeneficiaryWallet => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "missing_beneficiary_wallet",
+            ),
+
             CoreError::ZeroAmount
             | CoreError::EmptyBankRef
             | CoreError::InvalidFeeBps { .. }

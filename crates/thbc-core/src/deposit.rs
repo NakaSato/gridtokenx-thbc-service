@@ -68,8 +68,18 @@ pub struct Deposit {
     pub bank_ref: BankRef,
     /// Amount the webhook claimed.
     pub amount: Thb,
-    /// The user who gets the THBC.
+    /// The user who gets the THBC — an IAM user id. Identity for screening and
+    /// the audit trail, NOT an address: nothing on-chain can be derived from it.
     pub beneficiary: String,
+    /// The beneficiary's Solana owner wallet, base58.
+    ///
+    /// Supplied by the partner on the deposit webhook. This service deliberately
+    /// holds no Solana toolchain (F8) and no IAM client, so it cannot derive or
+    /// resolve this — it carries the string through to Chain Bridge, which
+    /// derives the associated token account under the THBC mint's own token
+    /// program. Stored on the deposit so a held deposit can be retried later
+    /// without the partner re-sending it.
+    pub beneficiary_wallet: String,
     pub state: DepositState,
     pub observed_at: i64,
 }
@@ -80,15 +90,23 @@ impl Deposit {
         bank_ref: BankRef,
         amount: Thb,
         beneficiary: impl Into<String>,
+        beneficiary_wallet: impl Into<String>,
         now: i64,
     ) -> CoreResult<Self> {
         if amount.is_zero() {
             return Err(CoreError::ZeroAmount);
         }
+        let beneficiary_wallet = beneficiary_wallet.into();
+        // An empty wallet would reach the bridge, fail `Pubkey::from_str`, and
+        // burn the bank_ref for nothing. Refuse before the deposit is recorded.
+        if beneficiary_wallet.trim().is_empty() {
+            return Err(CoreError::MissingBeneficiaryWallet);
+        }
         Ok(Self {
             bank_ref,
             amount,
             beneficiary: beneficiary.into(),
+            beneficiary_wallet,
             state: DepositState::Observed,
             observed_at: now,
         })
@@ -188,6 +206,7 @@ mod tests {
             BankRef::new("SCB-1").unwrap(),
             Thb::from_baht(1_000).unwrap(),
             "user-1",
+            "Wa11etOwner",
             0,
         )
         .unwrap()
@@ -299,8 +318,26 @@ mod tests {
 
     #[test]
     fn zero_amount_deposits_are_refused_at_the_door() {
-        let err = Deposit::observe(BankRef::new("X").unwrap(), Thb::ZERO, "u", 0).unwrap_err();
+        let err =
+            Deposit::observe(BankRef::new("X").unwrap(), Thb::ZERO, "u", "W", 0).unwrap_err();
         assert_eq!(err, CoreError::ZeroAmount);
+    }
+
+    /// An empty wallet would reach Chain Bridge, fail to parse as a pubkey, and
+    /// consume the `bank_ref` for nothing. Refuse before the deposit exists.
+    #[test]
+    fn a_missing_beneficiary_wallet_is_refused_at_the_door() {
+        for wallet in ["", "   "] {
+            let err = Deposit::observe(
+                BankRef::new("X").unwrap(),
+                Thb::from_baht(1).unwrap(),
+                "u",
+                wallet,
+                0,
+            )
+            .unwrap_err();
+            assert_eq!(err, CoreError::MissingBeneficiaryWallet);
+        }
     }
 
     #[test]

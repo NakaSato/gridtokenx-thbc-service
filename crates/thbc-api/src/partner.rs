@@ -34,8 +34,17 @@ pub struct DepositWebhook {
     /// THB in minor units (6 decimals). Integer — a JSON float here would not
     /// survive the F2 identity.
     pub amount_minor: u64,
-    /// IAM user id that receives the THBC.
+    /// IAM user id that receives the THBC. Identity for screening and the audit
+    /// trail — nothing on-chain can be derived from it.
     pub beneficiary: String,
+    /// The beneficiary's Solana owner wallet, base58.
+    ///
+    /// Optional in the type so an older partner's payload still *decodes* and
+    /// gets a named 422 instead of a bare deserialization error. It is not
+    /// optional in behaviour. This service holds no IAM client and no Solana
+    /// toolchain (F8), so it cannot resolve a user id to an address; until an
+    /// IAM wallet resolver exists, the partner supplies it.
+    pub beneficiary_wallet: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,12 +88,29 @@ async fn deposit(
         ));
     }
 
+    // Reject a missing wallet BEFORE the deposit is recorded, so an unusable
+    // request never consumes the bank_ref. 422 (not 400): the payload is
+    // well-formed, it just cannot be acted on.
+    let beneficiary_wallet = body
+        .beneficiary_wallet
+        .as_deref()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "missing_beneficiary_wallet",
+                "beneficiary_wallet (base58 Solana owner wallet) is required; this service \
+                 cannot resolve an IAM user id to an address",
+            )
+        })?;
+
     let bank_ref = BankRef::new(&body.bank_ref)?;
     let amount = Thb::from_minor(body.amount_minor);
 
     let outcome = state
         .issuance
-        .handle_deposit(bank_ref, amount, &body.beneficiary)
+        .handle_deposit(bank_ref, amount, &body.beneficiary, beneficiary_wallet)
         .await?;
 
     let (status, response) = match outcome {

@@ -114,6 +114,14 @@ impl Harness {
                 BankRef::new(reference).expect("valid ref"),
                 Thb::from_baht(baht).expect("fits"),
                 user,
+                // `LedgerPort::issue` receives the beneficiary's WALLET, not the
+                // IAM user id — nothing on-chain can be derived from the latter.
+                // In the simulator the string it receives IS the account key, and
+                // the redemption side of these tests keys off `user`, so the two
+                // must be the same identifier here. Passing a distinct
+                // `Wa11et-{user}` would issue to one account and redeem from
+                // another, which shows up as an Underflow several steps later.
+                user,
             )
             .await
             .expect("deposit handled")

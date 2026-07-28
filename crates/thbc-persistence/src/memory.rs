@@ -186,6 +186,7 @@ mod tests {
             BankRef::new(reference).unwrap(),
             Thb::from_baht(baht).unwrap(),
             "alice",
+            "Wa11etAlice",
             0,
         )
         .unwrap()

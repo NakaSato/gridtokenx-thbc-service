@@ -18,6 +18,12 @@ pub enum CoreError {
     #[error("amount must be greater than zero")]
     ZeroAmount,
 
+    #[error(
+        "beneficiary_wallet is required — this service cannot resolve an IAM user id \
+         to a Solana wallet, so the partner must supply it"
+    )]
+    MissingBeneficiaryWallet,
+
     // ---- F1 / F5: issuance ceiling -------------------------------------------
     #[error(
         "F1 breach: issuing {requested} would put supply at {resulting_supply} \

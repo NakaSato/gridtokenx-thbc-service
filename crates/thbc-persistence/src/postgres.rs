@@ -106,13 +106,15 @@ impl DepositRepository for PgDepositRepository {
         // swallowed. Off-chain F3 is only useful if the caller hears about it.
         sqlx::query(
             "INSERT INTO deposits
-               (bank_ref_hash, bank_ref, amount_minor, beneficiary, state, observed_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+               (bank_ref_hash, bank_ref, amount_minor, beneficiary, beneficiary_wallet,
+                state, observed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(deposit.nullifier().to_hex())
         .bind(deposit.bank_ref.as_str())
         .bind(to_i64(deposit.amount)?)
         .bind(&deposit.beneficiary)
+        .bind(&deposit.beneficiary_wallet)
         .bind(deposit.state.as_str())
         .bind(deposit.observed_at)
         .execute(&self.pool)
@@ -123,7 +125,7 @@ impl DepositRepository for PgDepositRepository {
 
     async fn find(&self, nullifier: BankRefHash) -> PortResult<Option<Deposit>> {
         let row = sqlx::query(
-            "SELECT bank_ref, amount_minor, beneficiary, state, observed_at
+            "SELECT bank_ref, amount_minor, beneficiary, beneficiary_wallet, state, observed_at
              FROM deposits WHERE bank_ref_hash = $1",
         )
         .bind(nullifier.to_hex())
@@ -140,6 +142,7 @@ impl DepositRepository for PgDepositRepository {
             bank_ref: BankRef::new(bank_ref).map_err(PortError::Domain)?,
             amount: from_i64(amount)?,
             beneficiary: row.try_get("beneficiary").map_err(map_sqlx)?,
+            beneficiary_wallet: row.try_get("beneficiary_wallet").map_err(map_sqlx)?,
             state: parse_deposit_state(&state)?,
             observed_at: row.try_get("observed_at").map_err(map_sqlx)?,
         }))
