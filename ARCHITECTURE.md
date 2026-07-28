@@ -262,6 +262,54 @@ Two deliberate deviations, both documented at their site:
 All money is `BIGINT` minor units — never `NUMERIC`, never `DOUBLE PRECISION`. F2 is
 an exact identity and does not survive rounding.
 
+### Migrations run on their own pool
+
+`sqlx::migrate!` takes a **session-scoped** advisory lock. In the compose stack,
+Postgres is fronted by pgdog in **transaction** pooling mode, where a session's
+connection is handed to other transactions between statements — so the lock can be
+taken on one backend and released against another, or outlive the migration.
+
+`THBC_MIGRATION_DATABASE_URL` therefore points at a session-mode pooler alias
+(`gridtokenx_thbc_migrate`, same physical database, configured in the superproject's
+`docker/pgdog/pgdog.toml`). `startup::run_migrations` opens a dedicated pool, migrates,
+and **closes it before the runtime pool opens**, so the migration connection is never
+reused for queries. Every other service in the stack does the same thing.
+
+Unset the variable when connecting straight to Postgres — local dev and tests — and
+migrations run on the runtime URL, which is correct because there is no pooler in
+between to break the lock. Both URLs are checked against the shared-database guard;
+the migration alias is the one that actually runs `CREATE TABLE`, so a correct runtime
+URL paired with a shared-database migration alias is the worst case and is rejected.
+
+---
+
+## 8a. Docker
+
+```bash
+# From the repo root — part of the full stack.
+docker compose up -d thbc-service
+curl localhost:4070/v1/admin/invariants
+
+# Standalone, no database, no chain:
+docker build -t thbc-service gridtokenx-thbc-service
+docker run --rm -p 4070:4008 \
+  -e THBC_LEDGER_MODE=simulated \
+  -e THBC_SIMULATED_RESERVE_MINOR=1000000000000 \
+  thbc-service
+```
+
+The build context is **this directory**, not the repo root — unlike most services
+here, nothing in `Cargo.toml` points at a sibling submodule. The runtime image is
+`debian:bookworm-slim` running as a non-root user (uid 10001); it carries the binary
+and a reference copy of `migrations/`, though `sqlx::migrate!` embeds them at compile
+time so the copy is documentation rather than load-bearing.
+
+Compose defaults to `THBC_LEDGER_MODE=simulated`. `chain-bridge` is the honest
+production mode but returns `501` for most of the payment leg, which makes it useless
+in a dev stack. The service logs its posture at startup and reports
+`simulated_ledger: true` on `/health` and on every response, so simulated state cannot
+be mistaken for live.
+
 ---
 
 ## 9. Test coverage, honestly

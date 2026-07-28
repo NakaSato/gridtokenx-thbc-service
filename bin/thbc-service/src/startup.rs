@@ -39,13 +39,12 @@ pub async fn build(config: &Config) -> Result<AppState> {
     // ---- Persistence ------------------------------------------------------
     let (deposits, redemptions): (Arc<dyn DepositRepository>, Arc<dyn RedemptionRepository>) =
         if let Some(url) = &config.database_url {
+            run_migrations(config, url).await?;
+
             let pool = sqlx::PgPool::connect(url)
                 .await
                 .context("connect to the THBC database")?;
-            thbc_persistence::migrate(&pool)
-                .await
-                .context("run THBC migrations")?;
-            info!("connected to Postgres and applied migrations");
+            info!("connected to Postgres");
             (
                 Arc::new(PgDepositRepository::new(pool.clone())),
                 Arc::new(PgRedemptionRepository::new(pool)),
@@ -147,6 +146,41 @@ pub async fn build(config: &Config) -> Result<AppState> {
         reserve,
         simulated: config.is_simulated(),
     })
+}
+
+/// Apply migrations on a **dedicated, short-lived pool**, then drop it.
+///
+/// `sqlx::migrate!` takes a Postgres advisory lock for the duration of the run.
+/// Advisory locks are session-scoped, and the stack's pooler (pgdog) fronts the
+/// runtime database in **transaction** mode — where a session's connection is
+/// handed to other transactions between statements, so the lock can be taken on one
+/// backend and released against another, or outlive the migration entirely.
+///
+/// Every other service here solves this the same way: migrate through a separate
+/// **session-mode** pooler alias (`gridtokenx_thbc_migrate`), configured in
+/// `docker/pgdog/pgdog.toml`. `THBC_MIGRATION_DATABASE_URL` carries it.
+///
+/// When that variable is unset — running against Postgres directly, as tests and
+/// local dev do — this falls back to the runtime URL, which is correct because
+/// there is no pooler in between to break the lock.
+///
+/// The pool is closed before the runtime pool opens so the migration connection is
+/// never reused for queries.
+async fn run_migrations(config: &Config, runtime_url: &str) -> Result<()> {
+    let (url, via) = match &config.migration_database_url {
+        Some(u) => (u.as_str(), "session-mode migration alias"),
+        None => (runtime_url, "runtime URL (no pooler alias configured)"),
+    };
+
+    let pool = sqlx::PgPool::connect(url)
+        .await
+        .context("connect to the THBC database for migrations")?;
+    let result = thbc_persistence::migrate(&pool).await;
+    pool.close().await;
+    result.context("run THBC migrations")?;
+
+    info!(via, "migrations applied");
+    Ok(())
 }
 
 /// Compliance port for non-simulated mode: refuses every screen.

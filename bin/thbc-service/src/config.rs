@@ -33,6 +33,15 @@ impl LedgerMode {
 pub struct Config {
     pub http_port: u16,
     pub database_url: Option<String>,
+
+    /// Session-mode pooler alias used only to run migrations (`THBC_MIGRATION_DATABASE_URL`).
+    ///
+    /// `sqlx::migrate!` takes a session-scoped advisory lock, which a
+    /// transaction-mode pooler will break. Unset means "no pooler in between" —
+    /// migrations then run on [`Self::database_url`], which is correct for a direct
+    /// Postgres connection.
+    pub migration_database_url: Option<String>,
+
     pub nats_url: String,
     pub chain_bridge_grpc_url: String,
     pub ledger_mode: LedgerMode,
@@ -74,6 +83,23 @@ where
 /// its own database from the start. Point this at `gridtokenx_thbc`.
 pub const DATABASE_URL_VAR: &str = "THBC_DATABASE_URL";
 
+/// Session-mode pooler alias for migrations. See [`Config::migration_database_url`].
+pub const MIGRATION_DATABASE_URL_VAR: &str = "THBC_MIGRATION_DATABASE_URL";
+
+/// The database name from a Postgres URL — the last path segment, minus any query.
+///
+/// Substring matching would be wrong in both directions here: it would reject the
+/// legitimate `gridtokenx_thbc`, and it would accept a host called
+/// `gridtokenx.example.com` serving the database `gridtokenx`.
+fn database_name(url: &str) -> &str {
+    url.rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("")
+}
+
 impl Config {
     /// Load from the environment.
     ///
@@ -90,6 +116,7 @@ impl Config {
         let config = Self {
             http_port: var_or("THBC_HTTP_PORT", 4008u16).context("THBC_HTTP_PORT")?,
             database_url: env::var(DATABASE_URL_VAR).ok(),
+            migration_database_url: env::var(MIGRATION_DATABASE_URL_VAR).ok(),
             nats_url: env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:9001".into()),
             chain_bridge_grpc_url: env::var("CHAIN_BRIDGE_GRPC_URL")
                 .unwrap_or_else(|_| "http://localhost:5001".into()),
@@ -132,20 +159,24 @@ impl Config {
         // owns creates `deposits` / `redemptions` tables beside tables that already
         // have owners, and adds a cross-service JOIN surface the DB-per-service
         // migration is trying to remove.
-        if let Some(url) = &self.database_url {
-            let db = url
-                .rsplit('/')
-                .next()
-                .unwrap_or("")
-                .split('?')
-                .next()
-                .unwrap_or("");
-            if db == "gridtokenx" {
+        // Checked on BOTH urls: the migration alias is the one that actually runs
+        // CREATE TABLE, so a correct runtime url with a shared-database migration
+        // alias is the worst case — it would look right and still write into
+        // `gridtokenx`.
+        for (var, url) in [
+            (DATABASE_URL_VAR, self.database_url.as_ref()),
+            (
+                MIGRATION_DATABASE_URL_VAR,
+                self.migration_database_url.as_ref(),
+            ),
+        ] {
+            let Some(url) = url else { continue };
+            if database_name(url) == "gridtokenx" {
                 bail!(
-                    "{DATABASE_URL_VAR} points at the shared `gridtokenx` database. This \
-                     service owns its own schema and must use a dedicated database \
-                     (`gridtokenx_thbc`); running its migrations into the shared one \
-                     creates deposits/redemptions tables beside other services' data"
+                    "{var} points at the shared `gridtokenx` database. This service owns \
+                     its own schema and must use a dedicated database (`gridtokenx_thbc`); \
+                     running its migrations into the shared one creates \
+                     deposits/redemptions tables beside other services' data"
                 );
             }
         }
@@ -190,6 +221,7 @@ mod tests {
         Config {
             http_port: 4008,
             database_url: Some("postgres://localhost:7001/gridtokenx_thbc".into()),
+            migration_database_url: None,
             nats_url: "nats://localhost:9001".into(),
             chain_bridge_grpc_url: "http://localhost:5001".into(),
             ledger_mode: LedgerMode::Simulated,
@@ -268,6 +300,50 @@ mod tests {
             };
             assert!(c.validate().is_err(), "{url} must be refused");
         }
+    }
+
+    #[test]
+    fn a_shared_database_migration_alias_is_rejected_too() {
+        // The nastiest misconfiguration: runtime url correct, migration alias wrong.
+        // The alias is what runs CREATE TABLE, so this would look right and still
+        // write `deposits` / `redemptions` into the shared database.
+        let c = Config {
+            database_url: Some("postgres://pgdog:6432/gridtokenx_thbc".into()),
+            migration_database_url: Some("postgres://pgdog:6432/gridtokenx".into()),
+            ..base()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn the_session_mode_migration_alias_is_accepted() {
+        let c = Config {
+            database_url: Some("postgres://pgdog:6432/gridtokenx_thbc".into()),
+            migration_database_url: Some("postgres://pgdog:6432/gridtokenx_thbc_migrate".into()),
+            ..base()
+        };
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn database_name_parses_the_last_segment_only() {
+        assert_eq!(
+            database_name("postgres://u:p@host:6432/gridtokenx"),
+            "gridtokenx"
+        );
+        assert_eq!(
+            database_name("postgres://u:p@host:6432/gridtokenx_thbc"),
+            "gridtokenx_thbc"
+        );
+        assert_eq!(
+            database_name("postgres://u:p@host:6432/gridtokenx?sslmode=disable"),
+            "gridtokenx"
+        );
+        // A host that merely contains the name must not be mistaken for it.
+        assert_eq!(
+            database_name("postgres://u:p@gridtokenx.example.com/thbc"),
+            "thbc"
+        );
     }
 
     #[test]

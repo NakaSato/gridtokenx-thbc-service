@@ -73,6 +73,32 @@ curl -X POST localhost:4008/v1/redemptions/alice/1/reclaim
 
 ---
 
+## Docker
+
+```bash
+# As part of the stack, from the superproject root
+docker compose up -d thbc-service
+curl localhost:4070/v1/admin/invariants
+
+# Standalone — no database, no chain, nothing to set up
+docker build -t thbc-service .
+docker run --rm -p 4070:4008 \
+  -e THBC_LEDGER_MODE=simulated \
+  -e THBC_SIMULATED_RESERVE_MINOR=1000000000000 \
+  thbc-service
+```
+
+Build context is **this directory**, not the repo root — nothing in `Cargo.toml`
+points at a sibling submodule, unlike most services here. Runtime image is
+`debian:bookworm-slim` as a non-root user.
+
+In the stack the service gets its own database (`gridtokenx_thbc`) via pgdog, and
+migrates through the **session-mode** alias `gridtokenx_thbc_migrate` —
+`sqlx::migrate!` holds a session-scoped advisory lock that a transaction-mode pool
+would break. Running standalone against Postgres directly, leave
+`THBC_MIGRATION_DATABASE_URL` unset: with no pooler in between, migrating on the
+runtime URL is correct.
+
 ## Configuration
 
 Full list with rationale in [`.env.example`](.env.example). Two that will bite you:
