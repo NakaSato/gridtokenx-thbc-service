@@ -1,0 +1,25 @@
+[package]
+name = "thbc-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP surface for the THBC settlement service — public, partner (bank webhooks), and admin/regulator gateways."
+
+[lints]
+workspace = true
+
+[dependencies]
+thbc-core = { workspace = true }
+thbc-logic = { workspace = true }
+
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+thbc-ledger = { workspace = true }
+thbc-persistence = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

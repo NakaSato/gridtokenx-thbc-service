@@ -1,0 +1,20 @@
+[package]
+name = "thbc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "THBC settlement domain core — money types, invariants F1-F9, deposit/redemption state machines. Synchronous, no framework dependencies."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+# Only for the `ports` trait definitions — the domain logic itself is sync.
+async-trait = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }

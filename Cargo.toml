@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/thbc-core",
+    "crates/thbc-ledger",
+    "crates/thbc-persistence",
+    "crates/thbc-logic",
+    "crates/thbc-api",
+    "bin/thbc-service",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# The payment leg must never panic on a value it received from a bank, a user, or
+# the chain. Every fallible step returns a typed error instead.
+#
+# Test modules re-allow these locally (`#![cfg_attr(test, allow(...))]` in each
+# lib.rs, `#![allow(...)]` at the top of each integration test): a test asserting
+# that a guard fires is *supposed* to unwrap, and threading `?` through assertions
+# obscures what is being asserted.
+unwrap_used = "deny"
+expect_used = "deny"
+# Every fallible function here returns `CoreError` or `PortError`, both of which
+# document each variant against the invariant it protects, and the function docs say
+# when they fire. A mandatory `# Errors` heading would restate that 40+ times.
+missing_errors_doc = "allow"
+
+[workspace.dependencies]
+# Internal crates
+thbc-core = { path = "crates/thbc-core" }
+thbc-ledger = { path = "crates/thbc-ledger" }
+thbc-persistence = { path = "crates/thbc-persistence" }
+thbc-logic = { path = "crates/thbc-logic" }
+thbc-api = { path = "crates/thbc-api" }
+
+# Async runtime
+tokio = { version = "1.48", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+    "signal",
+] }
+
+# Web framework
+axum = { version = "0.8.7", features = ["macros"] }
+tower-http = { version = "0.6.1", features = ["trace", "timeout"] }
+
+# Database
+sqlx = { version = "0.8", features = [
+    "postgres",
+    "runtime-tokio-rustls",
+    "chrono",
+    "uuid",
+    "migrate",
+] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time & identity
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Errors & logging
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Messaging — Chain Bridge is reached over NATS JetStream, never Solana RPC.
+async-nats = "0.37"
+
+# Hashing — bank_ref nullifier seed (F3)
+sha2 = "0.10"
+
+# Config
+dotenvy = "0.15"
+
+# Tests
+proptest = "1.9"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

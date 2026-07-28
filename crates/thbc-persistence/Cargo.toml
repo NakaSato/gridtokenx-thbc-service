@@ -1,0 +1,21 @@
+[package]
+name = "thbc-persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Postgres and in-memory implementations of the THBC repository ports."
+
+[lints]
+workspace = true
+
+[dependencies]
+thbc-core = { workspace = true }
+
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

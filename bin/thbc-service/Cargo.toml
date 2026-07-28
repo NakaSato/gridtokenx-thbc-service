@@ -1,0 +1,30 @@
+[package]
+name = "thbc-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "THBC settlement service binary — startup wiring for the payment leg."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "thbc-service"
+path = "src/main.rs"
+
+[dependencies]
+thbc-core = { workspace = true }
+thbc-api = { workspace = true }
+thbc-ledger = { workspace = true }
+thbc-logic = { workspace = true }
+thbc-persistence = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+dotenvy = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "thbc-logic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "THBC service orchestration — issuance, redemption, reserve, reconciliation, treasury inventory."
+
+[lints]
+workspace = true
+
+[dependencies]
+thbc-core = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+thbc-ledger = { workspace = true }
+thbc-persistence = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
