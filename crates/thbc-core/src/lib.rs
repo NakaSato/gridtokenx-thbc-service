@@ -27,9 +27,18 @@
 //! model is not a guarantee.
 //!
 //! [`invariant::INVARIANTS`] is the machine-readable statement of what is and is not
-//! actually enforced. Consult it rather than the prose. Today only **F5, F8 and F9**
-//! may be described as guarantees; F1, F2, F4 are partial, F3 and F7 are design-only,
-//! and **F6 is actively violated** by the live `swap_grx_for_thbc`, which mints.
+//! actually enforced. Consult it rather than the prose. Today only **F8 and F9** may be
+//! described as guarantees; F2, F4 and F6 are partial, and F1, F3, F5, F7 are
+//! design-only.
+//!
+//! F6 — the exchange path minting THBC against GRX collateral — was fixed on-chain on
+//! 2026-07-29: `swap_grx_for_thbc`/`redeem_thbc_for_grx` became
+//! `exchange_grx_for_thbc`/`exchange_thbc_for_grx`, which transfer against a
+//! `[b"thbc_inventory"]` vault. No program mints or burns THBC any more. That fix also
+//! removed the only call sites of the F1 ceiling and the F5 freshness check, because
+//! both lived on the minting swap — so **F1 and F5 are now vacuous rather than
+//! enforced** and must be re-attached to `issue_thbc`. F5 was claimable before that
+//! change and is not now.
 //!
 //! ## Module map
 //!

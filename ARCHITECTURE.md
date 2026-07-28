@@ -20,17 +20,20 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 
 | Invariant | Status | Enforced by |
 | :-- | :-- | :-- |
-| F1 reserve sufficiency | partial | on-chain, but against `attested_reserve` only — `reserve_encumbered` is off-chain |
+| F1 reserve sufficiency | **design only** | nothing — `PegBreach` has no call site since the minting swap was removed; vacuous because nothing mints |
 | F2 issuance conservation | partial | off-chain, **detective not preventive** |
 | F3 deposit idempotency | **design only** | nothing — the nullifier PDA does not exist |
 | F4 burn-before-wire | partial | the redemption state machine; no fiat rail to test against |
-| F5 attestation freshness | **enforced** | on-chain |
-| F6 backing-set purity | **violated** | `swap_grx_for_thbc` mints |
+| F5 attestation freshness | **design only** | nothing — `StaleAttestation` has no call site since the minting swap was removed |
+| F6 backing-set purity | partial *(code fixed)* | on-chain: exchange transfers from `[b"thbc_inventory"]`; no program mints or burns THBC |
 | F7 redemption liveness | **design only** | nothing — the escrow does not exist |
 | F8 non-custody | **enforced** | structural |
 | F9 attestation independence | **enforced** | on-chain |
 
-Only **F5, F8, F9** may be described to a third party as guarantees.
+Only **F8 and F9** may be described to a third party as guarantees. Both are
+*structural* rather than instruction-level, which is why they survived the F6 fix while
+F1 and F5 did not — those two were enforced only by the minting swap that F6 removed,
+and must be re-attached to `issue_thbc`.
 
 ---
 

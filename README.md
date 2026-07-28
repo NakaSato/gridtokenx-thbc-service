@@ -23,9 +23,17 @@ program (spec §12). This service models them correctly and executes them agains
 simulator; in `chain-bridge` mode it returns `501 not_implemented` for those routes,
 which is the accurate answer.
 
-Of the nine invariants, **only F5, F8 and F9 may be described as guarantees.** F6 is
-actively *violated* by the live `swap_grx_for_thbc`, which mints THBC against GRX
-collateral. The authoritative, machine-readable status is:
+Of the nine invariants, **only F8 and F9 may be described as guarantees.**
+
+F6 — the exchange path minting THBC against GRX — was fixed on-chain on 2026-07-29:
+`swap_grx_for_thbc`/`redeem_thbc_for_grx` became `exchange_grx_for_thbc`/
+`exchange_thbc_for_grx`, which transfer against an inventory vault. **No program mints
+or burns THBC any more.** That fix also removed the only call sites of the F1 ceiling
+and the F5 freshness check, since both lived on the minting swap — so F1 and F5 are now
+*vacuous rather than enforced*, and must be re-attached to `issue_thbc`. F5 was
+claimable before that change and is not now.
+
+The authoritative, machine-readable status is:
 
 ```bash
 curl localhost:4008/v1/admin/invariants
