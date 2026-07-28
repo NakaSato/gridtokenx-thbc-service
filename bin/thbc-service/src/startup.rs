@@ -69,6 +69,7 @@ pub async fn build(config: &Config) -> Result<AppState> {
             let bridge = ChainBridgeLedger::connect(ChainBridgeConfig {
                 nats_url: config.nats_url.clone(),
                 grpc_url: config.chain_bridge_grpc_url.clone(),
+                service_identity: config.service_identity.clone(),
                 ..ChainBridgeConfig::default()
             })
             .await

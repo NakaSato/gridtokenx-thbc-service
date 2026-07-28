@@ -46,6 +46,14 @@ pub struct Config {
     pub chain_bridge_grpc_url: String,
     pub ledger_mode: LedgerMode,
 
+    /// SPIFFE URI this service publishes NATS envelopes under.
+    ///
+    /// Must match the SAN in the mTLS client certificate at
+    /// `CHAIN_BRIDGE_CLIENT_CERT`: Chain Bridge verifies cert → CA → SAN ==
+    /// `service_identity` → signature, and force-signs both subjects this
+    /// service publishes to, so a mismatch rejects every chain write.
+    pub service_identity: String,
+
     /// Δ — how long a holder waits before reclaiming an unconfirmed redemption (F7).
     pub redemption_delta_secs: i64,
 
@@ -121,6 +129,8 @@ impl Config {
             chain_bridge_grpc_url: env::var("CHAIN_BRIDGE_GRPC_URL")
                 .unwrap_or_else(|_| "http://localhost:5001".into()),
             ledger_mode,
+            service_identity: env::var("THBC_SERVICE_IDENTITY")
+                .unwrap_or_else(|_| "spiffe://gridtokenx.th/prod/thbc-service".into()),
             redemption_delta_secs: var_or("THBC_REDEMPTION_DELTA_SECS", 86_400i64)?,
             attestation_ttl_secs: var_or("THBC_ATTESTATION_TTL_SECS", 3_600i64)?,
             simulated_reserve_minor: var_or("THBC_SIMULATED_RESERVE_MINOR", 0u64)?,
@@ -225,6 +235,7 @@ mod tests {
             nats_url: "nats://localhost:9001".into(),
             chain_bridge_grpc_url: "http://localhost:5001".into(),
             ledger_mode: LedgerMode::Simulated,
+            service_identity: "spiffe://gridtokenx.th/prod/thbc-service".into(),
             redemption_delta_secs: 86_400,
             attestation_ttl_secs: 3_600,
             simulated_reserve_minor: 0,
