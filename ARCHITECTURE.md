@@ -26,16 +26,20 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 | F4 burn-before-wire | partial | the redemption state machine; no fiat rail to test against |
 | F5 attestation freshness | **enforced** | on-chain in `issue_thbc`, checked before the F1 ceiling |
 | F6 backing-set purity | partial *(code fixed)* | on-chain: exchange transfers from `[b"thbc_inventory"]`; no program mints or burns THBC |
-| F7 redemption liveness | **design only** | nothing — the escrow does not exist |
+| F7 redemption liveness | **enforced** | on-chain — escrow + Δ timelock; both terminal instructions `close` the record |
 | F8 non-custody | **enforced** | structural |
 | F9 attestation independence | **enforced** | on-chain |
 
-**F3, F5, F8 and F9** may be described to a third party as guarantees.
+**F3, F5, F7, F8 and F9** may be described to a third party as guarantees. **Nothing is
+design-only any more** — every remaining gap is about the off-chain half or about legacy
+on-chain state, not about missing code.
 
 F1 and F5 briefly had no enforcement at all: both guards lived on the minting swap that
 the F6 fix removed. `issue_thbc` re-attached them to the instruction they actually
-belong to, and brought F3 with it. F3 is the strongest of the four — it is enforced by
-the **runtime**, not by a `require!` the program could get wrong.
+belong to, and brought F3 with it. F3 is the strongest — enforced by the **runtime**,
+not by a `require!` the program could get wrong. F7 uses the same trick inverted: both
+terminal instructions `close` the redemption record, so a double-confirm or a
+confirm-after-reclaim has no account left to act on.
 
 ---
 
@@ -329,7 +333,7 @@ be mistaken for live.
 | F4 | service integration test | ✅ full, against a recording payout queue |
 | F5 | **LiteSVM** | ✅ **LiteSVM** with `setClock` — fresh at exactly the TTL, halts one second past, resumes on refresh, future-dated rejected, and checked before F1 |
 | F6 | proptest + CI grep for `mint_to` in `exchange_*.rs` | ✅ proptest + **LiteSVM** (`thbc_supply` AND the SPL mint supply both unchanged across an exchange; shortfall refused, never minted). **No CI grep — there is no CI in this repo** |
-| F7 | **LiteSVM** with clock warp | ⚠️ simulator with clock warp; the escrow does not exist on-chain |
+| F7 | **LiteSVM** with clock warp | ✅ **LiteSVM** — reclaim fails at Δ−1 and succeeds at Δ; confirm blocks reclaim forever; double-confirm and confirm-after-reclaim both rejected; pause cannot trap escrowed tokens |
 | F8 | static audit + negative test | ✅ both |
 | F9 | unit test | ✅ |
 
@@ -339,8 +343,9 @@ The on-chain suite is
 from the program kills exactly the three F5 cases and nothing else, so the suite
 demonstrably catches a regression rather than merely passing.
 
-**F7 remains simulator-only** — the escrow does not exist on-chain, so there is nothing
-to run LiteSVM against. Do not report it as covered.
+**F7 covers the token side only.** An honest holder recovers their THBC within Δ, which
+is exactly what F7 states. If the issuer took the fiat and never wired, the reserve is
+short — a fair-exchange impossibility, spec §6.4, not a gap in the instruction.
 
 There is no CI in this repo — every gate is manual. A green local run is the only
 signal you get.

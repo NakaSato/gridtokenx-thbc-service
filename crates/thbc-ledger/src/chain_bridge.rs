@@ -140,21 +140,23 @@ impl LedgerPort for ChainBridgeLedger {
 
     async fn escrow_redemption(&self, _redemption: &Redemption) -> PortResult<ConfirmOutcome> {
         Err(PortError::Unsupported(
-            "redeem_thbc_for_fiat and the [b\"redeem\", user, seq] escrow record do not \
-             exist (spec §12). redeem_thbc_for_grx burns immediately and pays GRX, so it \
-             provides neither the F7 timelock nor a fiat leg",
+            "redeem_thbc_for_fiat exists on-chain but Chain Bridge has no route for it \
+             yet. Note it is USER-signed: the bridge would relay a transaction the \
+             holder already signed, never construct the signer set itself (F8)",
         ))
     }
 
     async fn confirm_redemption(&self, _user: &str, _seq: u64) -> PortResult<ConfirmOutcome> {
         Err(PortError::Unsupported(
-            "confirm_redemption does not exist (spec §12)",
+            "confirm_redemption exists on-chain but Chain Bridge has no route for it yet",
         ))
     }
 
     async fn reclaim_redemption(&self, _user: &str, _seq: u64) -> PortResult<ConfirmOutcome> {
         Err(PortError::Unsupported(
-            "reclaim_redemption does not exist (spec §12)",
+            "reclaim_redemption exists on-chain but Chain Bridge has no route for it yet; \
+             it is USER-signed, so the platform relays and never reclaims on a holder's \
+             behalf (F8)",
         ))
     }
 

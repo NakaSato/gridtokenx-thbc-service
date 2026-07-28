@@ -23,7 +23,9 @@ program (spec §12). This service models them correctly and executes them agains
 simulator; in `chain-bridge` mode it returns `501 not_implemented` for those routes,
 which is the accurate answer.
 
-Of the nine invariants, **F3, F5, F8 and F9 may be described as guarantees.**
+Of the nine invariants, **F3, F5, F7, F8 and F9 may be described as guarantees**, and
+**none is design-only** — every remaining gap is about the off-chain half or about
+legacy on-chain state, not about missing code.
 
 Two on-chain changes landed on 2026-07-29. **F6**: the exchange path stopped minting —
 `swap_grx_for_thbc`/`redeem_thbc_for_grx` became `exchange_grx_for_thbc`/
@@ -34,9 +36,15 @@ the `[b"deposit", H(bank_ref)]` nullifier is created with `init` in the same ins
 as the mint, so a replayed webhook is rejected by the **runtime**, before any program
 code runs.
 
+**F7** followed: `redeem_thbc_for_fiat` escrows rather than burning, `confirm_redemption`
+burns, and `reclaim_redemption` returns the tokens after Δ. Both terminal instructions
+`close` the record, so a double-confirm or a confirm-after-reclaim has no account left
+to act on. Reclaim is deliberately not gated on `paused` — pausing must never trap a
+holder's tokens.
+
 Still not claimable: F1 (the on-chain ceiling omits `reserve_encumbered`), F2
 (detective, not preventive), F4 (no fiat rail to test against), F6 (code fixed, but
-legacy GRX-backed supply may be outstanding), F7 (escrow not built).
+legacy GRX-backed supply may be outstanding).
 
 The authoritative, machine-readable status is:
 

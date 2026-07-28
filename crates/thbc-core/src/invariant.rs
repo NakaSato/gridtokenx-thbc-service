@@ -178,13 +178,21 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F7",
         name: "Redemption liveness",
         statement: "an honest holder obtains fiat or recovers THBC within delta",
-        status: Status::DesignOnly,
-        enforcement: Enforcement::Unenforced,
-        gap: Some(
-            "the timelocked redemption escrow does not exist on-chain. The token side is \
-             modelled here and in the simulated ledger only. The fiat side is unsolved \
-             even in design — see spec §6.4",
-        ),
+        // Implemented on-chain (gridtokenx-anchor): `redeem_thbc_for_fiat` escrows
+        // rather than burning, `confirm_redemption` burns, `reclaim_redemption` returns
+        // the tokens after delta. Both terminal instructions CLOSE the record, so
+        // double-confirm and confirm-after-reclaim fail at the account level.
+        //
+        // Enforced for the TOKEN side, which is all F7 as stated claims: an honest
+        // holder recovers their THBC within delta. Reclaim is deliberately not gated on
+        // `paused`, so the platform cannot trap escrowed tokens.
+        //
+        // The FIAT side is a separate matter and remains open — see the §6.4 note in
+        // KNOWN_LIMITATIONS.md. That is a fair-exchange impossibility, not a gap in
+        // this instruction, and F7 does not claim it.
+        status: Status::Enforced,
+        enforcement: Enforcement::OnChain,
+        gap: None,
     },
     Invariant {
         id: "F8",
@@ -262,9 +270,14 @@ mod tests {
         // Guards against someone flipping a status to make a dashboard green.
         // Flip these deliberately, together with §12 of the spec, when the on-chain
         // work actually lands.
-        assert_eq!(get("F7").unwrap().status, Status::DesignOnly);
         // F1/F3/F5 were re-attached to `issue_thbc`. F3 is Enforced by the RUNTIME
         // (account existence), which is stronger than a program-level check.
+        // F7 landed as the redemption escrow; nothing is DesignOnly any more.
+        assert_eq!(get("F7").unwrap().status, Status::Enforced);
+        assert!(
+            INVARIANTS.iter().all(|i| i.status != Status::DesignOnly),
+            "no invariant should remain DesignOnly"
+        );
         assert_eq!(get("F1").unwrap().status, Status::Partial);
         assert_eq!(get("F3").unwrap().status, Status::Enforced);
         assert_eq!(get("F3").unwrap().enforcement, Enforcement::Runtime);
@@ -289,10 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn disclosed_gaps_are_the_five_open_invariants() {
-        // F1, F2, F4, F6, F7 remain short of Enforced.
-        // F3, F5, F8, F9 are claimable — up from F8/F9 before `issue_thbc` landed.
+    fn disclosed_gaps_are_the_four_open_invariants() {
+        // F1, F2, F4, F6 remain short of Enforced — all four for reasons that are
+        // about the OFF-chain half or about legacy state, not about missing code.
+        // F3, F5, F7, F8, F9 are claimable.
         let gaps: Vec<_> = disclosed_gaps().iter().map(|i| i.id).collect();
-        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F7"]);
+        assert_eq!(gaps, ["F1", "F2", "F4", "F6"]);
     }
 }
