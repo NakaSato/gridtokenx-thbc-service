@@ -323,20 +323,24 @@ be mistaken for live.
 
 | Invariant | §13 asks for | What actually runs |
 | :-- | :-- | :-- |
-| F1 | proptest over random issue/redeem | ✅ proptest + service integration |
+| F1 | proptest over random issue/redeem | ✅ proptest + service integration + **LiteSVM** (ceiling, and one unit over) |
 | F2 | proptest over arbitrary interleaving | ✅ proptest + reconciler agreement |
-| F3 | E2E, **LiteSVM** | ⚠️ service-level replay only — the nullifier PDA does not exist, so there is nothing to run LiteSVM against |
+| F3 | E2E, **LiteSVM** | ✅ **LiteSVM** — replay reverts at the account level; normalisation variant hits the same nullifier; a reverted issuance leaves no nullifier so the ref is retryable |
 | F4 | service integration test | ✅ full, against a recording payout queue |
-| F5 | **LiteSVM** | ⚠️ against the simulator |
-| F6 | proptest + CI grep for `mint_to` in `exchange_*.rs` | ⚠️ proptest ✅; **no CI grep — there is no CI in this repo** |
+| F5 | **LiteSVM** | ✅ **LiteSVM** with `setClock` — fresh at exactly the TTL, halts one second past, resumes on refresh, future-dated rejected, and checked before F1 |
+| F6 | proptest + CI grep for `mint_to` in `exchange_*.rs` | ✅ proptest + **LiteSVM** (`thbc_supply` AND the SPL mint supply both unchanged across an exchange; shortfall refused, never minted). **No CI grep — there is no CI in this repo** |
 | F7 | **LiteSVM** with clock warp | ⚠️ simulator with clock warp; the escrow does not exist on-chain |
 | F8 | static audit + negative test | ✅ both |
 | F9 | unit test | ✅ |
 
-**Do not report F3, F5 or F7 as covered on the strength of this suite.** They exercise
-`SimulatedLedger`, a model of the program *as specified*; for F3 and F7 the program
-implements nothing to test. When the instructions land, these move to LiteSVM and the
-simulator becomes a fixture.
+The on-chain suite is
+[`gridtokenx-anchor/tests/treasury_thbc_litesvm.ts`](../gridtokenx-anchor/tests/treasury_thbc_litesvm.ts)
+— 14 cases, in-process, no validator. It is **mutation-checked**: deleting the F5 guard
+from the program kills exactly the three F5 cases and nothing else, so the suite
+demonstrably catches a regression rather than merely passing.
+
+**F7 remains simulator-only** — the escrow does not exist on-chain, so there is nothing
+to run LiteSVM against. Do not report it as covered.
 
 There is no CI in this repo — every gate is manual. A green local run is the only
 signal you get.
