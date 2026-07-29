@@ -214,23 +214,43 @@ pub const INVARIANTS: [Invariant; 9] = [
         // holding those two env vars and the database can reconstruct every user's
         // keypair and sign as them.
         //
-        // No service decrypts today — `decrypt_private_key*` is called only from
-        // blockchain-core's own unit tests — so the custody is latent rather than
-        // exercised. Latent is not absent: F8 is a claim about what the platform CAN
-        // do, and spec §3 states it as "P ... can it steal? no".
+        // Nothing decrypts those stored keys today — `decrypt_private_key*` is called
+        // only from blockchain-core's own unit tests. That made this look like latent
+        // custody awaiting a decision. It is not. Custody is the platform's settled,
+        // documented posture, in three places:
         //
-        // Do not restore this to Enforced without changing IAM. A doc edit cannot fix
-        // it; see the gap text for what actually would.
+        //   1. The IAM function is named `provision_custodial_wallet` and says so:
+        //      "custody is service-side by design so IAM can sign on the user's
+        //      behalf" (`iam-logic/src/auth_service.rs:502,518`).
+        //   2. blockchain-core lists "IAM stores encrypted custodial keys" as a
+        //      load-bearing invariant of the shared crate (`CLAUDE.md`, invariant 6).
+        //   3. The platform moved FURTHER toward custody: IAM's per-user `SignMessage`
+        //      RPC was removed in favour of Chain Bridge signing with its single
+        //      `platform_admin` Vault Transit key. `sign_message` now fails loudly
+        //      (`trading-service/.../identity/mod.rs:48`), and no `.proto` in the tree
+        //      declares per-user signing at all.
+        //
+        // So the platform's ability to move user assets is NOT latent — it is the
+        // production settlement path (`execute_atomic_settlement`, where every escrow
+        // is `ATA(platform, mint)` and the platform is sole signer). The stored
+        // per-user keys are the unused residue of the capability that was removed.
+        //
+        // F8 was therefore never true of this system at any point. It cannot be fixed
+        // by deleting those keys, and it cannot be fixed here at all: it would require
+        // restoring per-user Ed25519 signing platform-wide, which is exactly the
+        // blocker recorded against Option A in `docs/proposed/rec-production-settlement.md`.
         status: Status::Violated,
         enforcement: Enforcement::Unenforced,
         gap: Some(
-            "IAM stores user signing keys encrypted under service-only secrets \
-             (ENCRYPTION_SECRET + MASTER_SECRET, no user password in the KDF, salt \
-             stored alongside the ciphertext), so the platform can unilaterally sign \
-             as any user. This service holds no key and no port accepts one, but that \
-             is a property of one service, not of GridTokenX. Spec §3's \"P is trusted \
-             for liveness only\" and §10's T4 \"P can censor, not steal\" are both \
-             false as written",
+            "GridTokenX is custodial by design, not by accident. IAM provisions each \
+             user's keypair encrypted under service-only secrets (ENCRYPTION_SECRET + \
+             MASTER_SECRET, no user password in the KDF), and production settlement \
+             signs for every party with one platform_admin key. Per-user Ed25519 \
+             signing was REMOVED, so custody is the direction the platform chose, not \
+             a gap it drifted into. This service holds no key and no port accepts one, \
+             but that is a property of one service, not of GridTokenX. Spec §3's \"P is \
+             trusted for liveness only\" and §10's T4 \"P can censor, not steal\" are \
+             false as written and should be retired rather than fixed",
         ),
     },
     Invariant {
