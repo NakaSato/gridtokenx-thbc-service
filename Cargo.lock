@@ -2277,6 +2277,7 @@ dependencies = [
  "thbc-logic",
  "thbc-persistence",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
 ]

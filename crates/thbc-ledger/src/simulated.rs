@@ -123,6 +123,28 @@ impl SimulatedLedger {
         Ok(())
     }
 
+    /// Seed the platform's GRX vault, which the sell path draws down.
+    ///
+    /// Note the asymmetry with [`Self::fund_inventory`], which is deliberate rather
+    /// than an oversight. THBC inventory must come out of a user's balance because
+    /// this simulator *is* the THBC supply model — conjuring it would fabricate the
+    /// F2 drift that F6 exists to make impossible. GRX supply is not modelled here at
+    /// all: it lives in the GRX mint, outside the treasury this file simulates. So
+    /// GRX arriving from outside is the accurate picture, and there is no balance for
+    /// it to come out of.
+    ///
+    /// The `checked_add` still matters — an overflowing vault would wrap to a small
+    /// number and start refusing quotes it should honour.
+    pub fn fund_grx_inventory(&self, amount: Grx) -> PortResult<()> {
+        let mut s = self.lock()?;
+        s.inventory.grx = s
+            .inventory
+            .grx
+            .checked_add(amount)
+            .map_err(PortError::Domain)?;
+        Ok(())
+    }
+
     pub fn balance_of(&self, user: &str) -> PortResult<Thb> {
         Ok(self
             .lock()?
@@ -555,4 +577,31 @@ mod tests {
         );
     }
 
+    /// The GRX vault accumulates and, unlike THBC inventory, does not touch supply —
+    /// GRX is not part of the THBC supply model at all.
+    #[tokio::test]
+    async fn funding_grx_inventory_accumulates_and_leaves_thbc_supply_alone() {
+        let l = ledger();
+        let supply_before = l.supply().unwrap();
+
+        l.fund_grx_inventory(Grx::from_atoms(1_000_000_000)).unwrap();
+        l.fund_grx_inventory(Grx::from_atoms(500_000_000)).unwrap();
+
+        assert_eq!(
+            l.snapshot().await.unwrap().inventory.grx,
+            Grx::from_atoms(1_500_000_000)
+        );
+        assert_eq!(l.supply().unwrap(), supply_before);
+    }
+
+    #[tokio::test]
+    async fn funding_grx_inventory_past_u64_refuses_instead_of_wrapping() {
+        let l = ledger();
+        l.fund_grx_inventory(Grx::from_atoms(u64::MAX)).unwrap();
+
+        assert!(
+            l.fund_grx_inventory(Grx::from_atoms(1)).is_err(),
+            "a wrapped vault would silently start refusing quotes it should honour"
+        );
+    }
 }

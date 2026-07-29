@@ -110,6 +110,10 @@ dotenvy = "0.15"
 
 # Tests
 proptest = "1.9"
+# Drives an axum `Router` in-process via `ServiceExt::oneshot`, so the API tests
+# exercise real routing, extraction and the error→HTTP mapping without binding a
+# socket. Dev-only; nothing in the service depends on it.
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = 3

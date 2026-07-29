@@ -23,3 +23,4 @@ tracing = { workspace = true }
 thbc-ledger = { workspace = true }
 thbc-persistence = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { workspace = true }
