@@ -40,7 +40,7 @@
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use gridtokenx_blockchain_types::envelope_auth::{
-    canonical_issue_thbc_bytes, canonical_update_attestation_bytes, EnvelopeSigner,
+    EnvelopeSigner, canonical_issue_thbc_bytes, canonical_update_attestation_bytes,
 };
 use gridtokenx_blockchain_types::nats_schema::{
     IssueOutcome, IssueThbcMessage, IssueThbcResultMessage, UpdateAttestationMessage,
@@ -287,8 +287,9 @@ impl LedgerPort for ChainBridgeLedger {
             msg.auth = Some(signer.sign(&canonical_issue_thbc_bytes(&msg)));
         }
 
-        let reply: Option<IssueThbcResultMessage> =
-            self.request(ISSUE_THBC_SUBJECT, &msg, &reply_subject).await?;
+        let reply: Option<IssueThbcResultMessage> = self
+            .request(ISSUE_THBC_SUBJECT, &msg, &reply_subject)
+            .await?;
 
         if let Some(r) = &reply
             && let Some(err) = &r.error

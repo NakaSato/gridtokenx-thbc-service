@@ -23,9 +23,11 @@ program (spec §12). This service models them correctly and executes them agains
 simulator; in `chain-bridge` mode it returns `501 not_implemented` for those routes,
 which is the accurate answer.
 
-Of the nine invariants, **F3, F5, F7, F8 and F9 may be described as guarantees**, and
-**none is design-only** — every remaining gap is about the off-chain half or about
-legacy on-chain state, not about missing code.
+Of the nine invariants, **F3, F5, F7 and F9 may be described as guarantees.** None is
+design-only — but **F8 (non-custody) is violated**: `gridtokenx-iam-service` stores user
+signing keys encrypted under service-only secrets, so the platform can sign as any user.
+This service holds no key and no port accepts one, which is a property of *this service*
+and not of GridTokenX. See [`../KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md).
 
 Two on-chain changes landed on 2026-07-29. **F6**: the exchange path stopped minting —
 `swap_grx_for_thbc`/`redeem_thbc_for_grx` became `exchange_grx_for_thbc`/

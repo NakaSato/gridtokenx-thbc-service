@@ -198,12 +198,37 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F8",
         name: "Non-custody",
         statement: "no GridTokenX key appears in a signer set that can move user THBC",
-        // Structural: this service holds no user key and every user-value instruction
-        // it constructs is user-signed. See `ports::LedgerPort` — no method takes a
-        // user keypair.
-        status: Status::Enforced,
-        enforcement: Enforcement::OnChain,
-        gap: None,
+        // VIOLATED AT THE SYSTEM LEVEL. This was marked Enforced until 2026-07-29 on
+        // the strength of a true but insufficient argument: no method on any port in
+        // this crate accepts a keypair or signer, so *this service* holds no user key.
+        //
+        // That says nothing about the platform. `gridtokenx-iam-service` generates each
+        // user's Solana keypair and stores it encrypted
+        // (`iam-logic/src/auth_service.rs:536`), but both KDF inputs are SERVICE config
+        // — `encryption_secret` and `master_secret` (`iam-core/src/config.rs:31,45`,
+        // env `ENCRYPTION_SECRET` / `MASTER_SECRET`). The user's password is not an
+        // input, and the PBKDF2 salt is stored next to the ciphertext. So anyone
+        // holding those two env vars and the database can reconstruct every user's
+        // keypair and sign as them.
+        //
+        // No service decrypts today — `decrypt_private_key*` is called only from
+        // blockchain-core's own unit tests — so the custody is latent rather than
+        // exercised. Latent is not absent: F8 is a claim about what the platform CAN
+        // do, and spec §3 states it as "P ... can it steal? no".
+        //
+        // Do not restore this to Enforced without changing IAM. A doc edit cannot fix
+        // it; see the gap text for what actually would.
+        status: Status::Violated,
+        enforcement: Enforcement::Unenforced,
+        gap: Some(
+            "IAM stores user signing keys encrypted under service-only secrets \
+             (ENCRYPTION_SECRET + MASTER_SECRET, no user password in the KDF, salt \
+             stored alongside the ciphertext), so the platform can unilaterally sign \
+             as any user. This service holds no key and no port accepts one, but that \
+             is a property of one service, not of GridTokenX. Spec §3's \"P is trusted \
+             for liveness only\" and §10's T4 \"P can censor, not steal\" are both \
+             false as written",
+        ),
     },
     Invariant {
         id: "F9",
@@ -278,6 +303,10 @@ mod tests {
             INVARIANTS.iter().all(|i| i.status != Status::DesignOnly),
             "no invariant should remain DesignOnly"
         );
+        // F8 was Enforced until the IAM custody finding. Restoring it needs an IAM
+        // change (user-derived KDF, client-held keys, or retiring the claim outright),
+        // never a doc edit.
+        assert_eq!(get("F8").unwrap().status, Status::Violated);
         assert_eq!(get("F1").unwrap().status, Status::Partial);
         assert_eq!(get("F3").unwrap().status, Status::Enforced);
         assert_eq!(get("F3").unwrap().enforcement, Enforcement::Runtime);
@@ -302,11 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn disclosed_gaps_are_the_four_open_invariants() {
-        // F1, F2, F4, F6 remain short of Enforced — all four for reasons that are
+    fn disclosed_gaps_are_the_five_open_invariants() {
+        // F1, F2, F4, F6, F8 remain short of Enforced — all four for reasons that are
         // about the OFF-chain half or about legacy state, not about missing code.
         // F3, F5, F7, F8, F9 are claimable.
         let gaps: Vec<_> = disclosed_gaps().iter().map(|i| i.id).collect();
-        assert_eq!(gaps, ["F1", "F2", "F4", "F6"]);
+        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F8"]);
     }
 }

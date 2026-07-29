@@ -27,12 +27,15 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 | F5 attestation freshness | **enforced** | on-chain in `issue_thbc`, checked before the F1 ceiling |
 | F6 backing-set purity | partial *(code fixed)* | on-chain: exchange transfers from `[b"thbc_inventory"]`; no program mints or burns THBC |
 | F7 redemption liveness | **enforced** | on-chain — escrow + Δ timelock; both terminal instructions `close` the record |
-| F8 non-custody | **enforced** | structural |
+| F8 non-custody | **VIOLATED** | nothing — IAM can decrypt any user's signing key (service-only KDF secrets) |
 | F9 attestation independence | **enforced** | on-chain |
 
-**F3, F5, F7, F8 and F9** may be described to a third party as guarantees. **Nothing is
-design-only any more** — every remaining gap is about the off-chain half or about legacy
-on-chain state, not about missing code.
+**F3, F5, F7 and F9** may be described to a third party as guarantees. Nothing is
+design-only any more, but **F8 is violated**: `gridtokenx-iam-service` stores user
+signing keys encrypted under service-only secrets (`ENCRYPTION_SECRET` +
+`MASTER_SECRET`, no user password in the KDF), so the platform can sign as any user.
+This service holds no key and no port accepts one — but that is a property of one
+service, not of GridTokenX. See [`../KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md).
 
 F1 and F5 briefly had no enforcement at all: both guards lived on the minting swap that
 the F6 fix removed. `issue_thbc` re-attached them to the instruction they actually
@@ -216,14 +219,22 @@ logs an `error!` when an attestation fails to cover supply, which makes a lie vi
 but does not prevent it. **T1 + T2 collusion is the single point of failure and no
 mechanism in this design addresses it.**
 
-### F8 is a property of `ports.rs`
+### F8 — what `ports.rs` proves, and what it does not
 
 No method on `LedgerPort`, `DepositRepository`, `RedemptionRepository`,
-`CompliancePort` or `PayoutPort` accepts a private key, keypair, or signer. The
-platform relays transactions the user already signed; it cannot construct a signer set
-that moves user THBC. `sweep_reclaimable` deliberately *reports* overdue redemptions
-rather than reclaiming them — reclaiming would need the holder's key. `P` can censor
-(T4); it cannot steal.
+`CompliancePort` or `PayoutPort` accepts a private key, keypair, or signer, and
+`sweep_reclaimable` deliberately *reports* overdue redemptions rather than reclaiming
+them, because reclaiming would need the holder's key.
+
+**That proves this service is non-custodial. It does not prove the platform is**, and
+the difference was missed for most of this design's life. `gridtokenx-iam-service`
+generates and stores each user's keypair encrypted under `ENCRYPTION_SECRET` +
+`MASTER_SECRET` — service configuration, with no user password in the KDF and the salt
+stored beside the ciphertext — so GridTokenX can reconstruct any user's key and sign as
+them. No code does so today, but the capability exists.
+
+So the row above reads **`P` can censor, and can also steal**, which is not what the
+actor table says. Until IAM changes, do not repeat the non-custody claim.
 
 ---
 

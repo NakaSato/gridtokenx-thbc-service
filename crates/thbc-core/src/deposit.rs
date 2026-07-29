@@ -318,8 +318,7 @@ mod tests {
 
     #[test]
     fn zero_amount_deposits_are_refused_at_the_door() {
-        let err =
-            Deposit::observe(BankRef::new("X").unwrap(), Thb::ZERO, "u", "W", 0).unwrap_err();
+        let err = Deposit::observe(BankRef::new("X").unwrap(), Thb::ZERO, "u", "W", 0).unwrap_err();
         assert_eq!(err, CoreError::ZeroAmount);
     }
 
