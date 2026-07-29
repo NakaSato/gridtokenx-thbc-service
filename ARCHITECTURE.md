@@ -8,10 +8,10 @@
 
 ## 0. Read this first
 
-**Most of what this service describes is not built.** Spec §12: `issue_thbc`,
+**Much of what this service describes is not built.** `issue_thbc`,
 `redeem_thbc_for_fiat`, the deposit nullifier PDA, the redemption escrow and
-`reserve_encumbered` do not exist in the treasury program, and **no fiat rail of any
-kind exists**. This service models the payment leg correctly and executes it against a
+`reserve_encumbered` have since landed in the treasury program, but **no fiat rail of
+any kind exists**. This service models the payment leg correctly and executes it against a
 simulator. A model is not a guarantee.
 
 The authoritative statement of what is actually enforced is
@@ -20,7 +20,7 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 
 | Invariant | Status | Enforced by |
 | :-- | :-- | :-- |
-| F1 reserve sufficiency | partial | on-chain in `issue_thbc`, but against `attested_reserve` only — `reserve_encumbered` is off-chain |
+| F1 reserve sufficiency | **enforced** | on-chain in `issue_thbc`, against `attested_reserve - reserve_encumbered` — the field was carved into the tail of the existing 272-byte `Treasury` padding, no re-init |
 | F2 issuance conservation | partial | off-chain, **detective not preventive** — runs on an interval, appends every run to `reconciliation_runs` |
 | F3 deposit idempotency | **enforced** | the Solana **runtime** — `[b"deposit", H(bank_ref)]` created with `init` in the same instruction as the mint |
 | F4 burn-before-wire | partial | the redemption state machine; no fiat rail to test against |
@@ -28,10 +28,22 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 | F6 backing-set purity | partial *(code fixed)* | on-chain: exchange transfers from `[b"thbc_inventory"]`; no program mints or burns THBC |
 | F7 redemption liveness | **enforced** | on-chain — escrow + Δ timelock; both terminal instructions `close` the record |
 | F8 non-custody | **VIOLATED** | nothing — IAM can decrypt any user's signing key (service-only KDF secrets) |
-| F9 attestation independence | **enforced** | on-chain |
+| F9 attestation independence | **design-only** | nothing — `initialize` never compares `attestor` to `authority`, and the deployed localnet treasury has them equal |
 
-**F3, F5, F7 and F9** may be described to a third party as guarantees. Nothing is
-design-only any more, but **F8 is violated**: `gridtokenx-iam-service` stores user
+**F1, F3, F5 and F7** may be described to a third party as guarantees. **F9 is
+design-only**: this file claimed it was enforced on-chain and cited `initialize.rs`
+as rejecting equality, which it does not — the instruction writes `t.attestor`
+with no comparison and the treasury program defines no `AttestorIsAuthority` error
+at all. `reserve::TreasuryKeys::new` still rejects equality, but that is this
+service refusing to submit, not the chain refusing the transaction. Enforcing it
+takes **three** changes — a second Vault key for attestation, a relaxation of
+Chain Bridge's `key_id != "platform_admin"` rejection (a Reference Monitor
+authorization change, not a config tweak), and a way to move the LIVE treasury's
+`attestor`, which is written once at `initialize` with no setter. Adding only
+`require!(attestor != authority)` is worse than nothing: it misses the deployed
+treasury and breaks `init-treasury.ts` on every fresh environment.
+
+**F8 is violated**: `gridtokenx-iam-service` stores user
 signing keys encrypted under service-only secrets (`ENCRYPTION_SECRET` +
 `MASTER_SECRET`, no user password in the KDF), so the platform can sign as any user.
 This service holds no key and no port accepts one — but that is a property of one
@@ -107,10 +119,13 @@ The `Deposit` state machine makes that interval unrepresentable — there is no
 transition from `Screened` to `Issued`.
 
 The ceiling checked here is `attested_reserve − reserve_encumbered`, assembled from
-the chain's attestation plus **this service's own** deposit records, because
-`reserve_encumbered` is not an on-chain field. **This service is therefore stricter
-than the chain**, and that asymmetry is a disclosed gap, not a safety margin: a caller
-that bypasses this service gets the looser ceiling the program actually enforces.
+the chain's attestation plus **this service's own** deposit records. This service was
+formerly **stricter than the chain**, because `reserve_encumbered` had no on-chain
+field and the program enforced the bare `attested_reserve`; that asymmetry was the
+disclosed F1 gap, not a safety margin, since a caller bypassing this service got the
+looser ceiling. `ReserveService::attest` now publishes `total_encumbered()` with every
+attestation and the program subtracts it, so **both sides evaluate the same
+inequality** and F1 is enforced.
 
 ### §6.2 (F4) — a confirmed burn precedes a fiat payout
 
@@ -334,7 +349,7 @@ be mistaken for live.
 
 ## 9. Test coverage, honestly
 
-`cargo test` — 149 tests, no infrastructure required.
+`cargo test` — 171 tests, no infrastructure required.
 
 | Invariant | §13 asks for | What actually runs |
 | :-- | :-- | :-- |
@@ -346,13 +361,15 @@ be mistaken for live.
 | F6 | proptest + CI grep for `mint_to` in `exchange_*.rs` | ✅ proptest + **LiteSVM** (`thbc_supply` AND the SPL mint supply both unchanged across an exchange; shortfall refused, never minted). **No CI grep — there is no CI in this repo** |
 | F7 | **LiteSVM** with clock warp | ✅ **LiteSVM** — reclaim fails at Δ−1 and succeeds at Δ; confirm blocks reclaim forever; double-confirm and confirm-after-reclaim both rejected; pause cannot trap escrowed tokens |
 | F8 | static audit + negative test | ✅ both |
-| F9 | unit test | ✅ |
+| F9 | unit test | ⚠️ the unit test asserts F9 is `DesignOnly`/`Unenforced` — it pins the *absence* of enforcement, not the property |
 
 The on-chain suite is
 [`gridtokenx-anchor/tests/treasury_thbc_litesvm.ts`](../gridtokenx-anchor/tests/treasury_thbc_litesvm.ts)
-— 14 cases, in-process, no validator. It is **mutation-checked**: deleting the F5 guard
-from the program kills exactly the three F5 cases and nothing else, so the suite
-demonstrably catches a regression rather than merely passing.
+— 27 cases, in-process, no validator. It is **mutation-checked three times**: deleting
+the F5 guard kills exactly the three F5 cases and nothing else, deleting the F7 timelock
+kills exactly the Δ-boundary case, and deleting the `reserve_encumbered` subtraction
+kills three of F1's four cases — so the suite demonstrably catches a regression rather
+than merely passing.
 
 **F7 covers the token side only.** An honest holder recovers their THBC within Δ, which
 is exactly what F7 states. If the issuer took the fiat and never wired, the reserve is
@@ -368,7 +385,7 @@ signal you get.
 ```bash
 cd gridtokenx-thbc-service
 
-cargo test                  # 149 tests, no infra
+cargo test                  # 171 tests, no infra
 cargo clippy --all-targets -- -D warnings
 
 cp .env.example .env        # then edit

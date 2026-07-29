@@ -198,6 +198,20 @@ pub const INVARIANTS: [Invariant; 9] = [
         // the tokens after delta. Both terminal instructions CLOSE the record, so
         // double-confirm and confirm-after-reclaim fail at the account level.
         //
+        // VERIFIED ON THE LIVE CHAIN 2026-07-29, which matters because until that day
+        // it could not have worked: the `[b"redeem_escrow"]` vault had never been
+        // created, so every `redeem_thbc_for_fiat` would have failed
+        // `RedemptionEscrowNotInitialized`. This was `Enforced` on litesvm evidence
+        // alone while being impossible in the deployed environment.
+        //
+        // Against the deployed program: escrowing 5_000 moved the tokens out of the
+        // holder's ATA and into the escrow while `thbc_supply` stayed at 410_000 (the
+        // F7 property — the holder's tokens are not destroyed on request and remain
+        // recoverable); `reclaim_redemption` before delta was refused with
+        // `TimelockNotExpired`; `confirm_redemption` burned exactly 5_000, leaving
+        // tracked supply equal to mint supply; and a second confirm was refused
+        // because the record had been closed.
+        //
         // Enforced for the TOKEN side, which is all F7 as stated claims: an honest
         // holder recovers their THBC within delta. Reclaim is deliberately not gated on
         // `paused`, so the platform cannot trap escrowed tokens.

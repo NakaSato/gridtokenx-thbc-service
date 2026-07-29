@@ -23,8 +23,11 @@ program (spec §12). This service models them correctly and executes them agains
 simulator; in `chain-bridge` mode it returns `501 not_implemented` for those routes,
 which is the accurate answer.
 
-Of the nine invariants, **F3, F5, F7 and F9 may be described as guarantees.** None is
-design-only — but **F8 (non-custody) is violated**: `gridtokenx-iam-service` stores user
+Of the nine invariants, **F3, F5 and F7 may be described as guarantees.** **F9
+(attestation independence) is design-only** — `initialize` never compares `attestor`
+to `authority`, the treasury program defines no error for the equality case, and the
+deployed localnet treasury has them equal. **F8 (non-custody) is violated**:
+`gridtokenx-iam-service` stores user
 signing keys encrypted under service-only secrets, so the platform can sign as any user.
 This service holds no key and no port accepts one, which is a property of *this service*
 and not of GridTokenX. See [`../KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md).
@@ -44,9 +47,13 @@ burns, and `reclaim_redemption` returns the tokens after Δ. Both terminal instr
 to act on. Reclaim is deliberately not gated on `paused` — pausing must never trap a
 holder's tokens.
 
-Still not claimable: F1 (the on-chain ceiling omits `reserve_encumbered`), F2
-(detective, not preventive), F4 (no fiat rail to test against), F6 (code fixed, but
-legacy GRX-backed supply may be outstanding).
+**F1** followed too: `reserve_encumbered` now lives on-chain — carved into the tail of
+the existing 272-byte `Treasury` padding, so no field moved and no re-init was needed —
+and `ReserveService::attest` publishes the encumbered total with every attestation, so
+the chain enforces the same ceiling this service does.
+
+Still not claimable: F2 (detective, not preventive), F4 (no fiat rail to test against),
+F6 (code fixed, but legacy GRX-backed supply may be outstanding).
 
 The authoritative, machine-readable status is:
 
