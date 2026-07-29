@@ -526,6 +526,7 @@ mod tests {
     fn a_timeout_is_submitted_never_confirmed_or_failed() {
         assert_eq!(map_issue_reply(None), ConfirmOutcome::Submitted);
         assert_eq!(map_attest_reply(None), ConfirmOutcome::Submitted);
+        assert_eq!(map_confirm_redeem_reply(None), ConfirmOutcome::Submitted);
     }
 
     #[test]
@@ -551,6 +552,42 @@ mod tests {
         );
         assert_eq!(
             map_issue_reply(reply(IssueOutcome::Failed)),
+            ConfirmOutcome::Failed
+        );
+    }
+
+    /// The redemption burn has a second reason a lost reply must not read as
+    /// `Failed`, on top of the retry hazard the issuance path shares.
+    ///
+    /// `confirm_redemption` CLOSES the `[b"redeem", user, seq]` record. So a retry
+    /// after a burn that actually landed fails permanently at the runtime level —
+    /// and, worse, reporting `Failed` tells the service the holder's reclaim right
+    /// survives when the record may already be gone. `Submitted` keeps it unknown,
+    /// which is the only honest answer and the only one that does not invite the
+    /// service to act on a false belief about a holder's remedy.
+    #[test]
+    fn confirm_redeem_outcomes_map_onto_the_f4_barrier() {
+        let reply = |outcome| {
+            Some(ConfirmRedemptionResultMessage {
+                correlation_id: "c1".into(),
+                outcome,
+                signature: None,
+                error: None,
+                slot: 0,
+                deduplicated: false,
+            })
+        };
+        assert_eq!(
+            map_confirm_redeem_reply(reply(IssueOutcome::Confirmed)),
+            ConfirmOutcome::Confirmed
+        );
+        assert_eq!(
+            map_confirm_redeem_reply(reply(IssueOutcome::Pending)),
+            ConfirmOutcome::Submitted,
+            "Pending means the burn may still land — never report it as failed"
+        );
+        assert_eq!(
+            map_confirm_redeem_reply(reply(IssueOutcome::Failed)),
             ConfirmOutcome::Failed
         );
     }
