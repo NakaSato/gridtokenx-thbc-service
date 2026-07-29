@@ -184,11 +184,49 @@ fn map_attest_reply(reply: Option<UpdateAttestationResultMessage>) -> ConfirmOut
     }
 }
 
+/// `(user, password)` from a URL's userinfo, if present. Password defaults to
+/// empty when the userinfo has no `:`.
+fn url_userinfo(url: &str) -> Option<(String, String)> {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = after_scheme
+        .split(['/', '?'])
+        .next()
+        .unwrap_or(after_scheme);
+    let (userinfo, _host) = authority.rsplit_once('@')?;
+    let (user, pass) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+    Some((user.to_string(), pass.to_string()))
+}
+
+/// Connect to NATS honoring credentials embedded in the URL.
+///
+/// async-nats (0.37) **ignores** the userinfo component of a
+/// `nats://user:pass@host` URL — auth is taken only from `ConnectOptions` — so a
+/// broker with `authorization` enabled rejects a plain `async_nats::connect`
+/// even when the URL carries valid credentials. The failure is an
+/// `authorization violation` at connect, which reads like a wrong password
+/// rather than dropped credentials.
+///
+/// Mirrors `connect_with_url_creds` in
+/// `gridtokenx-aggregator-bridge/.../infra/mint.rs`, which mirrors
+/// `gridtokenx-blockchain-core`'s `rpc::nats_provider`. Duplicated rather than
+/// shared because this crate stays chain-light. Credentials are used verbatim
+/// (no percent-decoding).
+async fn connect_with_url_creds(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
+    match url_userinfo(url) {
+        Some((user, pass)) => {
+            async_nats::ConnectOptions::with_user_and_password(user, pass)
+                .connect(url)
+                .await
+        }
+        None => async_nats::connect(url).await,
+    }
+}
+
 impl ChainBridgeLedger {
     /// Connect to NATS. Fails fast — a payment service that starts without its only
     /// route to the ledger is worse than one that refuses to start.
     pub async fn connect(config: ChainBridgeConfig) -> PortResult<Self> {
-        let nats = async_nats::connect(&config.nats_url)
+        let nats = connect_with_url_creds(&config.nats_url)
             .await
             .map_err(|e| PortError::Transient(format!("NATS connect {}: {e}", config.nats_url)))?;
         let jetstream = async_nats::jetstream::new(nats.clone());
@@ -439,6 +477,32 @@ mod tests {
             assert_eq!(s.matches('.').count(), 2, "{s}");
             assert!(s.starts_with("chain.tx."), "{s}");
         }
+    }
+
+    /// async-nats 0.37 drops URL userinfo, so credentials must be lifted out and
+    /// passed via `ConnectOptions`. Getting this wrong surfaces as an
+    /// `authorization violation` that looks like a wrong password.
+    #[test]
+    fn url_userinfo_extracts_user_and_password() {
+        assert_eq!(
+            url_userinfo("nats://gridtokenx:gridtokenx_nats_dev@nats:4222"),
+            Some(("gridtokenx".to_string(), "gridtokenx_nats_dev".to_string()))
+        );
+    }
+
+    #[test]
+    fn url_userinfo_absent_returns_none() {
+        assert_eq!(url_userinfo("nats://nats:4222"), None);
+        // '@' beyond the authority (path/query) must not be mistaken for userinfo.
+        assert_eq!(url_userinfo("nats://host:4222/path@x"), None);
+    }
+
+    #[test]
+    fn url_userinfo_without_password_yields_empty_password() {
+        assert_eq!(
+            url_userinfo("nats://alice@nats:4222"),
+            Some(("alice".to_string(), String::new()))
+        );
     }
 
     #[test]
