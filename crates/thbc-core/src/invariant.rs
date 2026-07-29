@@ -283,10 +283,30 @@ pub const INVARIANTS: [Invariant; 9] = [
         // Bridge signs with a single Vault key: `issue_thbc` requires
         // `Treasury.authority` and `update_attestation` requires
         // `Treasury.attestor`, and the bridge passes `platform_admin` for both.
-        // Separating the keys needs a distinct Vault key for attestation —
-        // the shape `CHAIN_BRIDGE_REC_VALIDATOR_KEY_NAME` already uses for the
-        // REC co-signer — before F9 can be enforced without breaking the
-        // attestation route.
+        //
+        // Scoped precisely on 2026-07-29 — enforcing F9 takes THREE changes, and
+        // any one alone breaks the deployment:
+        //
+        //   1. A distinct signing key for attestation (the shape
+        //      `CHAIN_BRIDGE_REC_VALIDATOR_KEY_NAME` already uses for the REC
+        //      co-signer).
+        //   2. Relaxing Chain Bridge's authorization gate. `SignerPort` is already
+        //      multi-key — `sign_message(key_name, ..)` — but `sign_and_submit`
+        //      rejects any `key_id` other than `"platform_admin"`
+        //      (gridtokenx-chain-bridge/CLAUDE.md, "Key ID not authorized"). That
+        //      gate is the Reference Monitor's authorization check, so widening it
+        //      is a security change, not a config tweak.
+        //   3. A way to move the LIVE treasury's attestor. `Treasury.attestor` is
+        //      written once at `initialize` with no setter, so this needs either a
+        //      new `set_attestor` instruction or a re-init. A setter gated on
+        //      `authority` would partly defeat the point — the parameter admin
+        //      could grant itself attestation rights — so it should require the
+        //      CURRENT attestor to sign its own rotation.
+        //
+        // Adding only the `require!(attestor != authority)` guard to `initialize`
+        // is worse than nothing today: it does not touch the already-initialized
+        // treasury, and it would make `scripts/init-treasury.ts` fail on any fresh
+        // environment, since that script passes one key for both roles.
         //
         // `reserve::TreasuryKeys::new` still rejects equality, but that is this
         // service refusing to submit, not the chain refusing the transaction:
