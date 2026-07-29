@@ -67,7 +67,7 @@ curl localhost:4008/v1/admin/invariants
 
 ```bash
 cd gridtokenx-thbc-service
-cargo test                                  # 171 tests, no infrastructure needed
+cargo test                                  # 199 tests, no infrastructure needed
 
 cp .env.example .env
 THBC_LEDGER_MODE=simulated \

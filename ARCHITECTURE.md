@@ -362,7 +362,7 @@ be mistaken for live.
 
 ## 9. Test coverage, honestly
 
-`cargo test` — 171 tests, no infrastructure required.
+`cargo test` — 199 tests, no infrastructure required.
 
 | Invariant | §13 asks for | What actually runs |
 | :-- | :-- | :-- |
@@ -398,7 +398,7 @@ signal you get.
 ```bash
 cd gridtokenx-thbc-service
 
-cargo test                  # 171 tests, no infra
+cargo test                  # 199 tests, no infra
 cargo clippy --all-targets -- -D warnings
 
 cp .env.example .env        # then edit

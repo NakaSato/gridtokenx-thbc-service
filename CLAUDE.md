@@ -16,7 +16,7 @@ machines, trust boundaries and the honest test-coverage table.
 ```bash
 cd gridtokenx-thbc-service      # never cargo from the repo root — own workspace
 
-cargo test                      # 171 tests, 13 suites, no infra (DB/chain/validator all optional)
+cargo test                      # 199 tests, 14 suites, no infra (DB/chain/validator all optional)
 cargo test -p thbc-core         # one crate
 cargo test --test payment_leg   # one integration suite (thbc-logic)
 cargo test f7_reclaim -- --nocapture   # one test by substring
