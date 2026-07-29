@@ -181,12 +181,30 @@ pub const INVARIANTS: [Invariant; 9] = [
         // re-init clears it.
         status: Status::Partial,
         enforcement: Enforcement::OnChain,
+        // The localnet deployment was AUDITED on 2026-07-29 and is clean: `swap_vault`
+        // holds 0 GRX. The old `swap_grx_for_thbc` pulled GRX collateral into that vault
+        // whenever it minted, and the only instructions that drain it (`redeem_thbc_for_grx`
+        // then, `exchange_thbc_for_grx` now) also return the THBC — so a zero balance
+        // means no GRX-backed THBC is outstanding here. The 250_000 predating this work
+        // therefore came from `issue_thbc`, i.e. it is fiat-referenced.
+        //
+        // Kept `Partial` regardless, and the distinction is worth stating: that audit is
+        // a fact about ONE chain at ONE moment, established by a human reading a vault
+        // balance. This binary can be pointed at any cluster, and nothing in it checks
+        // provenance at startup or at runtime. Promoting F6 to `Enforced` on the strength
+        // of a manual check would be exactly the pattern that produced the other defects
+        // in this registry — a guarantee asserted from a one-off observation. What would
+        // actually earn it: a startup assertion that `swap_vault` is empty, or a
+        // documented retirement of the legacy supply.
         gap: Some(
             "the code is fixed — the exchange path transfers from `[b\"thbc_inventory\"]` \
              and no program mints or burns THBC any more — but THBC minted by the \
-             previous `swap_grx_for_thbc` is still outstanding on any chain that ran it, \
-             and that supply is GRX-backed. Retiring or re-initialising it is what turns \
-             this Enforced",
+             previous `swap_grx_for_thbc` is GRX-backed and would still be outstanding on \
+             any chain that ran it. The localnet deployment was audited 2026-07-29 and is \
+             clean (`swap_vault` holds 0 GRX, so no GRX-backed THBC exists there), but \
+             nothing in this service verifies that for the chain it is actually pointed \
+             at. A startup check on `swap_vault`, or a documented retirement of the legacy \
+             supply, is what turns this Enforced",
         ),
     },
     Invariant {
