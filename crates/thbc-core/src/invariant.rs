@@ -234,12 +234,36 @@ pub const INVARIANTS: [Invariant; 9] = [
         id: "F9",
         name: "Attestation independence",
         statement: "the attestor key != the parameter-admin key",
-        // programs/treasury/src/instructions/initialize.rs rejects equality; also
-        // re-checked here in `reserve::TreasuryKeys::new` so a misconfigured deploy
-        // fails at startup rather than at first attestation.
-        status: Status::Enforced,
-        enforcement: Enforcement::OnChain,
-        gap: None,
+        // This entry claimed `Enforced`/`OnChain` and cited
+        // `programs/treasury/src/instructions/initialize.rs` as rejecting
+        // equality. It does not. `initialize` takes `attestor: Pubkey` and
+        // writes `t.attestor = attestor` with no comparison, and the treasury
+        // program defines no `AttestorIsAuthority` error at all — the only one
+        // lives off-chain in this crate. Demonstrated on 2026-07-29:
+        // `init-treasury.ts` sets `attestor = authority.publicKey` and the
+        // program accepted it, so the deployed localnet treasury has
+        // attestor == authority.
+        //
+        // There is also a live reason it currently MUST be that way. Chain
+        // Bridge signs with a single Vault key: `issue_thbc` requires
+        // `Treasury.authority` and `update_attestation` requires
+        // `Treasury.attestor`, and the bridge passes `platform_admin` for both.
+        // Separating the keys needs a distinct Vault key for attestation —
+        // the shape `CHAIN_BRIDGE_REC_VALIDATOR_KEY_NAME` already uses for the
+        // REC co-signer — before F9 can be enforced without breaking the
+        // attestation route.
+        //
+        // `reserve::TreasuryKeys::new` still rejects equality, but that is this
+        // service refusing to submit, not the chain refusing the transaction:
+        // advisory, and a different caller bypasses it entirely.
+        status: Status::DesignOnly,
+        enforcement: Enforcement::Unenforced,
+        gap: Some(
+            "initialize does not compare attestor to authority and the treasury program has \
+             no error for it; the deployed localnet treasury has attestor == authority. \
+             Enforcing this requires a separate Vault key for attestation, because the \
+             bridge signs both roles with platform_admin.",
+        ),
     },
 ];
 
@@ -297,11 +321,25 @@ mod tests {
         // work actually lands.
         // F1/F3/F5 were re-attached to `issue_thbc`. F3 is Enforced by the RUNTIME
         // (account existence), which is stronger than a program-level check.
-        // F7 landed as the redemption escrow; nothing is DesignOnly any more.
+        // F7 landed as the redemption escrow.
         assert_eq!(get("F7").unwrap().status, Status::Enforced);
-        assert!(
-            INVARIANTS.iter().all(|i| i.status != Status::DesignOnly),
-            "no invariant should remain DesignOnly"
+        // F9 is the one DesignOnly entry, and it got there by being CORRECTED
+        // rather than by regressing: it claimed Enforced/OnChain citing a check
+        // in `initialize` that does not exist. Do not "fix" this by flipping it
+        // back — enforcing it needs `require!(attestor != authority)` on-chain
+        // AND a separate Vault key for attestation, because the bridge currently
+        // signs both roles with platform_admin.
+        assert_eq!(get("F9").unwrap().status, Status::DesignOnly);
+        assert_eq!(get("F9").unwrap().enforcement, Enforcement::Unenforced);
+        let design_only: Vec<_> = INVARIANTS
+            .iter()
+            .filter(|i| i.status == Status::DesignOnly)
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(
+            design_only,
+            ["F9"],
+            "only F9 should be DesignOnly; a new one means work regressed"
         );
         // F8 was Enforced until the IAM custody finding. Restoring it needs an IAM
         // change (user-derived KDF, client-held keys, or retiring the claim outright),
@@ -331,11 +369,15 @@ mod tests {
     }
 
     #[test]
-    fn disclosed_gaps_are_the_five_open_invariants() {
-        // F1, F2, F4, F6, F8 remain short of Enforced — all four for reasons that are
-        // about the OFF-chain half or about legacy state, not about missing code.
-        // F3, F5, F7, F8, F9 are claimable.
+    fn disclosed_gaps_are_the_six_open_invariants() {
+        // F1, F2, F4, F6, F8 are short of Enforced for reasons about the
+        // OFF-chain half or about legacy state, not missing code.
+        //
+        // F9 joined them on 2026-07-29. It had claimed Enforced/OnChain citing a
+        // check in `initialize` that does not exist — the program never compares
+        // attestor to authority, and the deployed treasury has them equal.
+        // Only F3, F5 and F7 are claimable as guarantees.
         let gaps: Vec<_> = disclosed_gaps().iter().map(|i| i.id).collect();
-        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F8"]);
+        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F8", "F9"]);
     }
 }

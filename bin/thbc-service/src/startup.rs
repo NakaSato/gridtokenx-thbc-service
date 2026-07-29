@@ -76,9 +76,10 @@ pub async fn build(config: &Config) -> Result<AppState> {
             .map_err(|e| anyhow::anyhow!("connect to Chain Bridge: {e}"))?;
             info!(nats = %config.nats_url, "ledger: Chain Bridge");
             warn!(
-                "redeem_thbc_for_fiat, confirm_redemption and reclaim_redemption have no \
-                 Chain Bridge route yet — those routes return 501 not_implemented. \
-                 issue_thbc and update_attestation are live."
+                "issue_thbc, update_attestation and confirm_redemption are live. \
+                 redeem_thbc_for_fiat and reclaim_redemption return 501 BY DESIGN: both \
+                 are user-signed, and a bridge route would sign them with the platform \
+                 key — inverting the protection they exist to give the holder."
             );
             Arc::new(bridge)
         }

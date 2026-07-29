@@ -22,11 +22,22 @@
 //! pulled it, so every attestation was captured by the bridge's stream and then
 //! silently aged out. An instruction existing on-chain is not enough.
 //!
-//! The redemption methods and [`LedgerPort::snapshot`] still return
-//! [`PortError::Unsupported`]. `snapshot` refuses for its own reason — three of
-//! the four fields `TreasurySnapshot` carries are not on the `Treasury` account,
-//! and synthesising them would report a tighter F1 ceiling than the chain
-//! enforces.
+//! [`LedgerPort::confirm_redemption`] is live too — the issuer-signed half of F7,
+//! over `chain.tx.confirmredeem`.
+//!
+//! [`LedgerPort::escrow_redemption`] and [`LedgerPort::reclaim_redemption`] still
+//! return [`PortError::Unsupported`], and that is a **design decision, not a
+//! backlog item**. Both are user-signed: spec §6.1 step 1 is explicit that the
+//! issuer cannot redeem on a holder's behalf, and reclaim exists so a holder can
+//! recover tokens the issuer sat on. A bridge route for either would sign them
+//! with the platform's Vault key, inverting the protection they provide — and
+//! given that IAM can already decrypt user keys (see F8 in the invariant
+//! registry), it would turn a latent custody capability into an exercised one on
+//! exactly the path where a user is protecting themselves from the platform.
+//!
+//! [`LedgerPort::snapshot`] refuses for its own unrelated reason — three of the
+//! four fields `TreasurySnapshot` carries are not on the `Treasury` account, and
+//! synthesising them would report a tighter F1 ceiling than the chain enforces.
 //!
 //! Returning `Unsupported` is the point. The alternative — encoding a redemption
 //! against `exchange_thbc_for_grx`, which pays *GRX* — would produce a service
@@ -40,11 +51,12 @@
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use gridtokenx_blockchain_types::envelope_auth::{
-    EnvelopeSigner, canonical_issue_thbc_bytes, canonical_update_attestation_bytes,
+    EnvelopeSigner, canonical_confirm_redemption_bytes, canonical_issue_thbc_bytes,
+    canonical_update_attestation_bytes,
 };
 use gridtokenx_blockchain_types::nats_schema::{
-    IssueOutcome, IssueThbcMessage, IssueThbcResultMessage, UpdateAttestationMessage,
-    UpdateAttestationResultMessage,
+    ConfirmRedemptionMessage, ConfirmRedemptionResultMessage, IssueOutcome, IssueThbcMessage,
+    IssueThbcResultMessage, UpdateAttestationMessage, UpdateAttestationResultMessage,
 };
 use thbc_core::bank_ref::BankRefHash;
 use thbc_core::money::Thb;
@@ -58,7 +70,9 @@ use thbc_core::redemption::{ConfirmOutcome, Redemption};
 /// token under `chain.tx.` — NATS `*` matches exactly one token, so
 /// `chain.tx.attest.update` would be captured by the bound stream and never
 /// delivered.
-pub use gridtokenx_blockchain_types::nats_schema::{ATTEST_SUBJECT, ISSUE_THBC_SUBJECT};
+pub use gridtokenx_blockchain_types::nats_schema::{
+    ATTEST_SUBJECT, CONFIRM_REDEMPTION_SUBJECT, ISSUE_THBC_SUBJECT,
+};
 
 /// How long to wait for the bridge to report a *confirmed* outcome.
 ///
@@ -139,6 +153,22 @@ fn map_issue_reply(reply: Option<IssueThbcResultMessage>) -> ConfirmOutcome {
         // Anchor `init`, so the second attempt reverts at the account level.
         // `Submitted` leaves the deposit in `attested` for the reconciler, which
         // is the only component that can resolve an unknown.
+        None => ConfirmOutcome::Submitted,
+    }
+}
+
+fn map_confirm_redeem_reply(reply: Option<ConfirmRedemptionResultMessage>) -> ConfirmOutcome {
+    match reply {
+        Some(r) => match r.outcome {
+            IssueOutcome::Confirmed => ConfirmOutcome::Confirmed,
+            IssueOutcome::Pending => ConfirmOutcome::Submitted,
+            IssueOutcome::Failed => ConfirmOutcome::Failed,
+        },
+        // Same reasoning as `map_issue_reply`: no reply is UNKNOWN, not failed.
+        // `confirm_redemption` closes the redemption record, so a retry after a
+        // burn that actually landed fails permanently — and reporting `Failed`
+        // here would also tell the service the holder's reclaim right survives
+        // when it may not.
         None => ConfirmOutcome::Submitted,
     }
 }
@@ -311,10 +341,42 @@ impl LedgerPort for ChainBridgeLedger {
         ))
     }
 
-    async fn confirm_redemption(&self, _user: &str, _seq: u64) -> PortResult<ConfirmOutcome> {
-        Err(PortError::Unsupported(
-            "confirm_redemption exists on-chain but Chain Bridge has no route for it yet",
-        ))
+    async fn confirm_redemption(&self, user: &str, seq: u64) -> PortResult<ConfirmOutcome> {
+        let correlation_id = uuid::Uuid::new_v4().to_string();
+        let reply_subject = format!("chain.confirmredeem.result.{correlation_id}");
+
+        let mut msg = ConfirmRedemptionMessage {
+            correlation_id: correlation_id.clone(),
+            // Stable per logical confirmation. `(user, seq)` IS the redemption's
+            // identity — the same pair that keys the on-chain record — so a
+            // re-send replays the bridge's recorded outcome instead of attempting
+            // a second burn against a record that no longer exists.
+            idempotency_key: format!("confirmredeem:{user}:{seq}"),
+            reply_subject: reply_subject.clone(),
+            user_wallet: user.to_string(),
+            seq,
+            service_identity: self.config.service_identity.clone(),
+            created_at_ms: Self::now_ms(),
+            auth: None,
+        };
+        if let Some(signer) = &self.signer {
+            msg.auth = Some(signer.sign(&canonical_confirm_redemption_bytes(&msg)));
+        }
+
+        let reply: Option<ConfirmRedemptionResultMessage> = self
+            .request(CONFIRM_REDEMPTION_SUBJECT, &msg, &reply_subject)
+            .await?;
+
+        if let Some(r) = &reply
+            && let Some(err) = &r.error
+        {
+            tracing::warn!(
+                correlation_id = %correlation_id,
+                outcome = ?r.outcome,
+                "redemption confirmation reply carried an error: {err}"
+            );
+        }
+        Ok(map_confirm_redeem_reply(reply))
     }
 
     async fn reclaim_redemption(&self, _user: &str, _seq: u64) -> PortResult<ConfirmOutcome> {
