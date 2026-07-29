@@ -157,7 +157,7 @@ impl LedgerPort for SimulatedLedger {
             reserve: s.reserve,
             inventory: s.inventory,
             params: s.params,
-            redemption_queue_len: pending,
+            redemption_queue_len: Some(pending),
         })
     }
 
@@ -471,7 +471,7 @@ mod tests {
             amount,
             "but supply is unchanged — not yet burned"
         );
-        assert_eq!(l.snapshot().await.unwrap().redemption_queue_len, 1);
+        assert_eq!(l.snapshot().await.unwrap().redemption_queue_len, Some(1));
     }
 
     #[tokio::test]
@@ -554,4 +554,5 @@ mod tests {
             "F6: inventory is not a mint"
         );
     }
+
 }

@@ -68,7 +68,13 @@ pub struct TreasurySnapshot {
     pub inventory: Inventory,
     pub params: ExchangeParams,
     /// Pending redemptions — the count `E` observes (spec §6.3).
-    pub redemption_queue_len: u32,
+    ///
+    /// `None` means "not observable through this ledger", which is deliberately
+    /// distinct from `Some(0)`. Counting live `[b"redeem", user, seq]` records needs
+    /// `getProgramAccounts`, and the Chain Bridge read surface does not expose it —
+    /// so a bridge-backed snapshot cannot answer. Reporting `Some(0)` there would
+    /// claim an empty queue and could hide an unserviced redemption from `E`.
+    pub redemption_queue_len: Option<u32>,
 }
 
 /// The single door to the ledger.

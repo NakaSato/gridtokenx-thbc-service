@@ -47,6 +47,8 @@ pub async fn build(config: &Config) -> Result<AppState> {
                 nats_url: config.nats_url.clone(),
                 grpc_url: config.chain_bridge_grpc_url.clone(),
                 service_identity: config.service_identity.clone(),
+                treasury_pda: config.treasury_pda.clone(),
+                inventory_vault: config.inventory_vault.clone(),
                 ..ChainBridgeConfig::default()
             })
             .await

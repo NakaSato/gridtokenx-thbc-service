@@ -102,6 +102,9 @@ gridtokenx-blockchain-types = { path = "../gridtokenx-blockchain-core/crates/blo
 # Hashing — bank_ref nullifier seed (F3)
 sha2 = "0.10"
 
+# Account bytes come back base64 over chain.query.account
+base64 = "0.22"
+
 # Config
 dotenvy = "0.15"
 

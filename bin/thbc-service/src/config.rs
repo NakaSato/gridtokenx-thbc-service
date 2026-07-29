@@ -44,6 +44,15 @@ pub struct Config {
 
     pub nats_url: String,
     pub chain_bridge_grpc_url: String,
+    /// Base58 addresses of `[b"treasury"]` and `[b"thbc_inventory"]`.
+    ///
+    /// Configured rather than derived: PDA derivation needs the off-curve check and
+    /// therefore curve25519, which would breach this service's chain-light property.
+    /// Unset leaves `LedgerPort::snapshot` unsupported, which is the honest outcome —
+    /// a snapshot read from a guessed address would report a confident, wrong F1
+    /// ceiling.
+    pub treasury_pda: Option<String>,
+    pub inventory_vault: Option<String>,
     pub ledger_mode: LedgerMode,
 
     /// SPIFFE URI this service publishes NATS envelopes under.
@@ -141,6 +150,8 @@ impl Config {
             database_url: env::var(DATABASE_URL_VAR).ok(),
             migration_database_url: env::var(MIGRATION_DATABASE_URL_VAR).ok(),
             nats_url: env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:9001".into()),
+            treasury_pda: env::var("THBC_TREASURY_PDA").ok().filter(|v| !v.is_empty()),
+            inventory_vault: env::var("THBC_INVENTORY_VAULT").ok().filter(|v| !v.is_empty()),
             chain_bridge_grpc_url: env::var("CHAIN_BRIDGE_GRPC_URL")
                 .unwrap_or_else(|_| "http://localhost:5001".into()),
             ledger_mode,
@@ -250,6 +261,8 @@ mod tests {
             migration_database_url: None,
             nats_url: "nats://localhost:9001".into(),
             chain_bridge_grpc_url: "http://localhost:5001".into(),
+            treasury_pda: None,
+            inventory_vault: None,
             ledger_mode: LedgerMode::Simulated,
             service_identity: "spiffe://gridtokenx.th/prod/thbc-service".into(),
             redemption_delta_secs: 86_400,

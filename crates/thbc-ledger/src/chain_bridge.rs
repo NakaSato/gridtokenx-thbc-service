@@ -60,7 +60,10 @@ use gridtokenx_blockchain_types::nats_schema::{
 };
 use thbc_core::bank_ref::BankRefHash;
 use thbc_core::money::Thb;
+use thbc_core::exchange::{ExchangeParams, Inventory};
+use thbc_core::money::Grx;
 use thbc_core::ports::{LedgerPort, PortError, PortResult, TreasurySnapshot};
+use thbc_core::reserve::{Attestation, ReserveState};
 use thbc_core::redemption::{ConfirmOutcome, Redemption};
 
 /// NATS subject for attestation refresh.
@@ -95,6 +98,20 @@ pub struct ChainBridgeConfig {
     /// cert → CA → SAN == `service_identity` → signature, and rejects a
     /// mismatch.
     pub service_identity: String,
+    /// Base58 address of the treasury state PDA (`[b"treasury"]`), and of the THBC
+    /// inventory vault (`[b"thbc_inventory"]`).
+    ///
+    /// Carried as configuration rather than derived. Deriving a PDA needs the
+    /// off-curve check, which needs curve25519 — and pulling that in would breach the
+    /// chain-light property this crate is held to (workspace `Cargo.toml`: no
+    /// solana-sdk, no anchor, no SPL, no tonic). Reading a `u64` at a known offset
+    /// needs none of that, which is the whole reason the snapshot can be served over
+    /// NATS at all.
+    ///
+    /// `None` disables the snapshot rather than guessing an address: a snapshot read
+    /// from the wrong account would report a confident, wrong F1 ceiling.
+    pub treasury_pda: Option<String>,
+    pub inventory_vault: Option<String>,
 }
 
 impl Default for ChainBridgeConfig {
@@ -104,6 +121,8 @@ impl Default for ChainBridgeConfig {
             grpc_url: "http://localhost:5001".into(),
             confirm_timeout_secs: CONFIRM_TIMEOUT_SECS,
             service_identity: "spiffe://gridtokenx.th/prod/thbc-service".into(),
+            treasury_pda: None,
+            inventory_vault: None,
         }
     }
 }
@@ -260,6 +279,54 @@ impl ChainBridgeLedger {
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
     }
 
+    /// One raw account read over `chain.query.account`.
+    ///
+    /// Plain NATS request/reply, deliberately not `JetStream` — a read wants neither
+    /// durability nor replay.
+    ///
+    /// `Ok(None)` means the bridge said the account is definitely absent. A bridge
+    /// that could not answer produces `Err`, and the two must not be collapsed:
+    /// treating a failure as absence turns an unreachable RPC into an empty vault.
+    async fn query_account(&self, pubkey: &str) -> PortResult<Option<Vec<u8>>> {
+        use base64::Engine as _;
+        use gridtokenx_blockchain_types::nats_schema::{
+            AccountQueryMessage, AccountQueryResultMessage, ACCOUNT_QUERY_SUBJECT,
+        };
+
+        let msg = AccountQueryMessage {
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+            pubkey: pubkey.to_string(),
+            service_identity: self.config.service_identity.clone(),
+            created_at_ms: Self::now_ms(),
+        };
+        let bytes = serde_json::to_vec(&msg)
+            .map_err(|e| PortError::Rejected(format!("encode account query: {e}")))?;
+
+        // Short timeout: this is a read on a request path, and a caller waiting the
+        // full confirm timeout for a balance is worse than a prompt failure.
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.nats.request(ACCOUNT_QUERY_SUBJECT, bytes.into()),
+        )
+        .await
+        .map_err(|_| PortError::Transient("account query timed out".into()))?
+        .map_err(|e| PortError::Transient(format!("account query: {e}")))?;
+
+        let res: AccountQueryResultMessage = serde_json::from_slice(&reply.payload)
+            .map_err(|e| PortError::Transient(format!("decode account query reply: {e}")))?;
+
+        if let Some(err) = res.error {
+            return Err(PortError::Transient(format!("bridge account query: {err}")));
+        }
+        if !res.exists {
+            return Ok(None);
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(&res.data_base64)
+            .map(Some)
+            .map_err(|e| PortError::Transient(format!("decode account bytes: {e}")))
+    }
+
     /// Publish a signed intent and await the bridge's reply on `reply_subject`.
     ///
     /// Three details here are load-bearing and easy to get subtly wrong:
@@ -312,16 +379,107 @@ impl ChainBridgeLedger {
 
 #[async_trait]
 impl LedgerPort for ChainBridgeLedger {
+    /// Reads the real treasury over `chain.query.account`.
+    ///
+    /// This used to return `Unsupported`, on the grounds that `reserve_encumbered`,
+    /// `thbc_inventory` and `redemption_queue_len` were not on the account. Two of
+    /// those three are no longer true: `reserve_encumbered` landed at offset 264
+    /// (2026-07-29) and the inventory is just a token-account balance. The stale
+    /// refusal is why the reconciler reported `Unsupported` on every tick.
+    ///
+    /// The bytes are decoded here rather than by the bridge. That is what keeps this
+    /// crate chain-light: reading a `u64` at a known offset needs no solana-sdk, and
+    /// the alternative — the gRPC client — would drag in solana-sdk and tonic, which
+    /// the workspace manifest forbids.
     async fn snapshot(&self) -> PortResult<TreasurySnapshot> {
-        // The treasury account is readable today, but three of the four fields
-        // `TreasurySnapshot` carries — `reserve_encumbered`, `thbc_inventory`,
-        // `redemption_queue_len` — are not on the account (spec §4.1, all NEW).
-        // Synthesising them from the fields that do exist would report a tighter F1
-        // ceiling than the chain actually enforces. Refuse instead.
-        Err(PortError::Unsupported(
-            "Treasury account lacks reserve_encumbered / thbc_inventory / \
-             redemption_queue_len (spec §4.1) — a snapshot would misreport the F1 ceiling",
-        ))
+        /// 8-byte Anchor discriminator before the 272-byte zero-copy `Treasury`.
+        const B: usize = 8;
+
+        let (Some(treasury_pda), Some(inventory_vault)) =
+            (&self.config.treasury_pda, &self.config.inventory_vault)
+        else {
+            return Err(PortError::Unsupported(
+                "THBC_TREASURY_PDA / THBC_INVENTORY_VAULT are unset — refusing to guess \
+                 an address, because a snapshot read from the wrong account would report \
+                 a confident and wrong F1 ceiling",
+            ));
+        };
+
+        let data = self.query_account(treasury_pda).await?.ok_or_else(|| {
+            PortError::Rejected(format!("treasury account {treasury_pda} does not exist"))
+        })?;
+
+        // 8-byte Anchor discriminator, then the 272-byte zero-copy `Treasury`.
+        // Offsets are pinned by `carved_fields_kept_their_offsets` in the program's
+        // state.rs, so a layout change there fails that test rather than silently
+        // misreading here.
+        if data.len() < B + 272 {
+            return Err(PortError::Rejected(format!(
+                "treasury account is {} bytes, expected at least {}",
+                data.len(),
+                B + 272
+            )));
+        }
+        // `expect_used` is denied workspace-wide and this is the payment leg, so no
+        // fallible conversion here. The length check above guarantees every read below
+        // is in bounds: the largest offset used is B + 264, and B + 264 + 8 == B + 272.
+        let le8 = |off: usize| -> [u8; 8] {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&data[off..off + 8]);
+            b
+        };
+        let u64_at = |off: usize| -> u64 { u64::from_le_bytes(le8(off)) };
+        let i64_at = |off: usize| -> i64 { i64::from_le_bytes(le8(off)) };
+
+        let attested_reserve = Thb::from_minor(u64_at(B + 176));
+        let attestation_ts = i64_at(B + 184);
+        let attestation_ttl = i64_at(B + 192);
+        let thbc_supply = Thb::from_minor(u64_at(B + 200));
+        let grx_per_thbc_rate = u64_at(B + 208);
+        let fee_bps = {
+            let mut b = [0u8; 2];
+            b.copy_from_slice(&data[B + 248..B + 250]);
+            u16::from_le_bytes(b)
+        };
+        let paused = data[B + 250] != 0;
+        let reserve_encumbered = Thb::from_minor(u64_at(B + 264));
+
+        // SPL token account: `amount` is a u64 at offset 64. Absent vault = zero
+        // inventory is correct here (the vault genuinely holds nothing until
+        // `initialize_thbc_inventory` runs); a query FAILURE propagates instead.
+        let inventory_thbc = match self.query_account(inventory_vault).await? {
+            Some(v) if v.len() >= 72 => {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&v[64..72]);
+                Thb::from_minor(u64::from_le_bytes(b))
+            }
+            _ => Thb::ZERO,
+        };
+
+        Ok(TreasurySnapshot {
+            reserve: ReserveState::new(
+                Attestation::new(attested_reserve, attestation_ts, attestation_ttl),
+                reserve_encumbered,
+                thbc_supply,
+            ),
+            inventory: Inventory {
+                thbc: inventory_thbc,
+                // `swap_vault` is a separate account and is not needed by any
+                // consumer of this snapshot today. Reported as zero rather than
+                // guessed; adding it means another configured address.
+                grx: Grx::ZERO,
+            },
+            params: ExchangeParams {
+                grx_per_thbc_rate,
+                fee_bps,
+                paused,
+            },
+            // NOT derivable over this transport: counting live `[b"redeem", user, seq]`
+            // records needs getProgramAccounts, which the bridge does not expose. `None`
+            // says "not observable here" — distinct from `Some(0)`, which would claim an
+            // empty queue and could hide an unserviced redemption from the `E` observer.
+            redemption_queue_len: None,
+        })
     }
 
     /// `beneficiary` is the **owner wallet** (base58), not an IAM user id and not
