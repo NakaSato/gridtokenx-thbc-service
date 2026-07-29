@@ -196,8 +196,8 @@ transfer_checked(thbc_out, thbc_inventory -> user_thbc_ata)  // platform pays TH
 // thbc_supply UNCHANGED — no mint, no burn
 ```
 
-Pricing is identical to the on-chain `compute_swap_grx_for_thbc`
-(`gridtokenx-anchor/programs/treasury/src/lib.rs:67`) so quotes match execution to the
+Pricing is identical to the on-chain `compute_exchange_grx_for_thbc`
+(`gridtokenx-anchor/programs/treasury/src/lib.rs:127`) so quotes match execution to the
 minor unit. The one substantive difference: where the program checks
 `new_supply ≤ attested_reserve`, this checks `thbc_out ≤ inventory`. **Reserve headroom
 is not consumed at all.**
@@ -210,10 +210,23 @@ risk, which is the correct place for it (§7.2). `grx_per_thbc_rate` remains a d
 centralisation: a quoted market-maker rate against bounded inventory, not a peg. §7.3
 rules out an AMM so the reference rate never becomes a market outcome.
 
-**This fixes the off-chain half only.** `swap_grx_for_thbc` still calls `mint_to`
-(`instructions/swap_grx_for_thbc.rs:97`) and `redeem_thbc_for_grx` still calls `burn`
-(`instructions/redeem_thbc_for_grx.rs:71`). F6 remains `Violated` in the registry
-until those change.
+**The on-chain half landed too (2026-07-29).** `swap_grx_for_thbc` / `redeem_thbc_for_grx`
+were replaced by `exchange_grx_for_thbc` / `exchange_thbc_for_grx`, which transfer against
+the `[b"thbc_inventory"]` vault
+(`instructions/exchange_grx_for_thbc.rs:113` and `:131` are both `transfer_checked`; there
+is no `thbc_supply` write, and `:138` says so). No program mints or burns THBC any more.
+
+**F6 is `Partial`, not `Enforced`, and the distinction is code vs *state*.** The code can no
+longer mint against GRX, but THBC minted by the old swap is GRX-backed and would still be
+outstanding on any chain that ran it. The localnet deployment was audited on 2026-07-29 and
+is clean — `swap_vault` holds 0 GRX, and since every instruction that drains it also returns
+the THBC, a zero balance means no GRX-backed THBC exists there.
+
+That audit is a fact about **one chain at one moment**, established by a human reading a
+vault balance; this binary can be pointed at any cluster and checks provenance nowhere.
+Promoting F6 on the strength of it would be the exact pattern that produced the other
+defects in this registry. What earns `Enforced`: a startup assertion that `swap_vault` is
+empty, or a documented retirement of the legacy supply.
 
 ---
 

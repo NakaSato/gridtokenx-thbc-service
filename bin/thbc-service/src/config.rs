@@ -126,6 +126,12 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         let _ = dotenvy::from_filename(".env");
 
+        // Unset defaults to `chain-bridge`; a value that is *set but unrecognised* is a
+        // hard error (see `an_unknown_ledger_mode_fails_rather_than_defaulting`). The two
+        // cases differ: forgetting the variable entirely gets the honest mode, which 501s
+        // the routes that aren't built, and the failure is loud and in the right place.
+        // Defaulting to `simulated` instead would serve a fake ledger to anyone who
+        // forgot to set it — the one outcome that must never happen silently.
         let ledger_mode = LedgerMode::parse(
             &env::var("THBC_LEDGER_MODE").unwrap_or_else(|_| "chain-bridge".into()),
         )?;

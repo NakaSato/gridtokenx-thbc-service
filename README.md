@@ -67,7 +67,7 @@ curl localhost:4008/v1/admin/invariants
 
 ```bash
 cd gridtokenx-thbc-service
-cargo test                                  # 154 tests, no infrastructure needed
+cargo test                                  # 171 tests, no infrastructure needed
 
 cp .env.example .env
 THBC_LEDGER_MODE=simulated \
@@ -137,8 +137,9 @@ Full list with rationale in [`.env.example`](.env.example). Two that will bite y
   `DATABASE_URL` at the shared `gridtokenx` database, and this service must not
   migrate into it. Pointing this variable at `gridtokenx` is rejected at startup.
 - **`THBC_LEDGER_MODE`** — `simulated` (everything works, none of it is real) or
-  `chain-bridge` (the real path, mostly `501`). No default that could be silently
-  wrong: an unrecognised value fails startup.
+  `chain-bridge` (the real path, mostly `501`). Unset defaults to `chain-bridge`, so a
+  missing variable fails loudly on the routes that aren't built rather than quietly
+  serving a fake ledger; an unrecognised value fails startup outright.
 
 ---
 

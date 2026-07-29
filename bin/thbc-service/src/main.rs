@@ -156,7 +156,15 @@ fn spawn_reconciler(state: &thbc_api::AppState, interval_secs: u64) {
             // Spec §5.4's "held, retried after refresh". The refresh is what unsticks
             // them, and nothing else polls — so this is the only thing that ever
             // releases a deposit held during a stale-attestation window.
+            //
+            // `match_same_arms` fires on the two silent arms below and merging them is
+            // exactly wrong: "nothing was held" and "the reserve snapshot is unavailable"
+            // are opposite conditions that happen to share an empty body. Merged, the
+            // next person to give one of them a log line has to re-derive the split.
+            #[allow(clippy::match_same_arms)]
             match issuance.retry_all_held().await {
+                // Nothing was held — the common case, and silent on purpose. Logging it
+                // hourly would bury the retried/issued line that actually matters.
                 Ok((0, _)) => {}
                 Ok((retried, issued)) => {
                     info!(retried, issued, "retried held deposits");
