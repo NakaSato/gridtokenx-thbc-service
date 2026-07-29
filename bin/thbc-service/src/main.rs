@@ -124,13 +124,32 @@ fn spawn_reconciler(state: &thbc_api::AppState, interval_secs: u64) {
         // ten times and say nothing extra.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // `snapshot` returns `Unsupported` in chain-bridge mode until the Treasury
+        // account carries reserve_encumbered / thbc_inventory / redemption_queue_len
+        // (spec §4.1). Without this latch the loop would log an ERROR every tick,
+        // forever, for a condition that is a known gap rather than a fault — and an
+        // hourly error nobody can act on is how operators learn to ignore the one
+        // alarm that matters. Report it once, then stay quiet until it changes.
+        let mut unsupported_reported = false;
+
         loop {
             ticker.tick().await;
 
             match reconciliation.run().await {
                 // `run` already logs at the right level per severity — info/warn/error
                 // — so re-logging the healthy case here would just be noise.
-                Ok(_) => {}
+                Ok(_) => unsupported_reported = false,
+                Err(thbc_core::ports::PortError::Unsupported(why)) => {
+                    if !unsupported_reported {
+                        warn!(
+                            "reconciliation is UNAVAILABLE in this configuration and F2 drift \
+                             will go undetected: {why}. This message is logged once, not per \
+                             tick; it will repeat if reconciliation starts working and fails \
+                             again."
+                        );
+                        unsupported_reported = true;
+                    }
+                }
                 Err(e) => error!("reconciliation run failed: {e}"),
             }
 
@@ -142,6 +161,11 @@ fn spawn_reconciler(state: &thbc_api::AppState, interval_secs: u64) {
                 Ok((retried, issued)) => {
                     info!(retried, issued, "retried held deposits");
                 }
+                // Same `Unsupported` case: the retry needs a reserve snapshot too. It
+                // is silent here rather than latched separately, because the
+                // reconciliation warning above already names the cause and this would
+                // only restate it.
+                Err(thbc_core::ports::PortError::Unsupported(_)) => {}
                 Err(e) => error!("held-deposit retry sweep failed: {e}"),
             }
 
