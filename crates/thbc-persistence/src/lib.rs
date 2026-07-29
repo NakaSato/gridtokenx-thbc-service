@@ -20,8 +20,8 @@
 pub mod memory;
 pub mod postgres;
 
-pub use memory::{InMemoryDepositRepo, InMemoryRedemptionRepo};
-pub use postgres::{PgDepositRepository, PgRedemptionRepository};
+pub use memory::{InMemoryDepositRepo, InMemoryReconciliationRepo, InMemoryRedemptionRepo};
+pub use postgres::{PgDepositRepository, PgReconciliationRepository, PgRedemptionRepository};
 
 /// Apply the migrations in `migrations/`.
 ///

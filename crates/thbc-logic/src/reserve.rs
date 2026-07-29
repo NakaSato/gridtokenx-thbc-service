@@ -11,8 +11,12 @@
 use std::sync::Arc;
 
 use thbc_core::money::Thb;
-use thbc_core::ports::{Clock, DepositRepository, LedgerPort, PortResult, RedemptionRepository};
+use thbc_core::ports::{
+    Clock, DepositRepository, LedgerPort, PortError, PortResult, ReconciliationRepository,
+    RedemptionRepository,
+};
 use thbc_core::reconcile::{LedgerTally, ReconciliationReport, Severity, reconcile};
+use thbc_core::redemption::ConfirmOutcome;
 use thbc_core::reserve::ReserveState;
 use tracing::{error, info, instrument, warn};
 
@@ -79,19 +83,79 @@ impl ReserveService {
     /// logged at `error` so it cannot pass unnoticed.
     #[instrument(skip(self), fields(reserve = reserve.minor()))]
     pub async fn attest(&self, reserve: Thb) -> PortResult<()> {
-        let state = self.current().await?;
-        let free = reserve.saturating_sub(state.encumbered);
-        if state.supply > free {
-            error!(
-                supply = state.supply.minor(),
-                free_backing = free.minor(),
-                shortfall = state.supply.saturating_sub(free).minor(),
-                "F1 BREACH: attested reserve does not cover outstanding supply"
-            );
+        // The pre-read is ADVISORY: it only logs an F1-breach warning and gates
+        // nothing. So an unavailable snapshot must not abort the attestation.
+        //
+        // This is not hypothetical. Against Chain Bridge, `snapshot` returns
+        // `Unsupported` by design — three of the four fields it reports are not
+        // on the `Treasury` account, and synthesising them would misreport the
+        // F1 ceiling. Propagating that turned every attestation into a 501
+        // whose message talked about `reserve_encumbered`, which reads like the
+        // attestation itself is unimplemented. It is not: `update_attestation`
+        // exists on-chain and is routed.
+        //
+        // Refusing to attest because we cannot *check* the result is also
+        // backwards on its own terms: a stale attestation halts issuance (F5),
+        // so blocking the refresh is strictly worse than performing it blind.
+        match self.current().await {
+            Ok(state) => {
+                let free = reserve.saturating_sub(state.encumbered);
+                if state.supply > free {
+                    error!(
+                        supply = state.supply.minor(),
+                        free_backing = free.minor(),
+                        shortfall = state.supply.saturating_sub(free).minor(),
+                        "F1 BREACH: attested reserve does not cover outstanding supply"
+                    );
+                }
+            }
+            Err(PortError::Unsupported(why)) => {
+                warn!(
+                    reason = why,
+                    "attesting without the pre-check: the ledger cannot report a snapshot, \
+                     so an F1 breach in the NEW value would go unnoticed here (the chain \
+                     still enforces its own ceiling on issuance)"
+                );
+            }
+            Err(e) => return Err(e),
         }
-        self.ledger.update_attestation(reserve).await?;
-        info!(reserve = reserve.minor(), "attestation refreshed");
-        Ok(())
+        // The outcome is the whole point and must NOT be discarded.
+        //
+        // This previously did `update_attestation(...).await?;` and then logged
+        // "attestation refreshed" unconditionally — so a `Failed` reply from the
+        // bridge produced HTTP 200 and a success log while `attested_reserve`
+        // stayed 0 on-chain. Reporting an unconfirmed write as done is the
+        // accept-on-send weakening spec §6.2 forbids, and it is worse here than
+        // for a payout: an operator who believes the attestation landed will not
+        // re-send it, and issuance stays halted under F5 for a reason nothing
+        // reports.
+        match self.ledger.update_attestation(reserve).await? {
+            ConfirmOutcome::Confirmed => {
+                info!(reserve = reserve.minor(), "attestation refreshed");
+                Ok(())
+            }
+            // Unknown, not done. The transaction may still land, so this is not
+            // `Failed` — but the caller must not treat it as success.
+            ConfirmOutcome::Submitted => {
+                warn!(
+                    reserve = reserve.minor(),
+                    "attestation submitted but NOT confirmed; attested_reserve may be unchanged"
+                );
+                Err(PortError::Transient(
+                    "attestation submitted but not confirmed on-chain; re-send to verify".into(),
+                ))
+            }
+            ConfirmOutcome::Failed => {
+                error!(
+                    reserve = reserve.minor(),
+                    "attestation FAILED on-chain; attested_reserve is unchanged and issuance \
+                     stays halted under F5"
+                );
+                Err(PortError::Rejected(
+                    "attestation transaction failed on-chain; attested_reserve unchanged".into(),
+                ))
+            }
+        }
     }
 }
 
@@ -100,6 +164,7 @@ pub struct ReconciliationService {
     deposits: Arc<dyn DepositRepository>,
     redemptions: Arc<dyn RedemptionRepository>,
     reserve: Arc<ReserveService>,
+    history: Arc<dyn ReconciliationRepository>,
     clock: Arc<dyn Clock>,
 }
 
@@ -109,14 +174,25 @@ impl ReconciliationService {
         deposits: Arc<dyn DepositRepository>,
         redemptions: Arc<dyn RedemptionRepository>,
         reserve: Arc<ReserveService>,
+        history: Arc<dyn ReconciliationRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             deposits,
             redemptions,
             reserve,
+            history,
             clock,
         }
+    }
+
+    /// Runs recorded so far that were not `Ok`.
+    ///
+    /// A point-in-time reconciliation cannot answer "was this ever broken?" — a drift
+    /// that appeared and was resolved reads identically to one that never happened.
+    /// This is what makes the history worth keeping rather than just logging.
+    pub async fn unhealthy_runs(&self) -> PortResult<u64> {
+        self.history.unhealthy_count().await
     }
 
     /// Run F2 and the F1 solvency check.
@@ -154,6 +230,11 @@ impl ReconciliationService {
                 "F1 BREACH: outstanding THBC exceeds free fiat backing"
             ),
         }
+
+        // Persist BEFORE returning, and do not let a storage failure swallow the
+        // report: a caller that got a result must be able to trust it was recorded,
+        // and an unrecorded breach is the one an auditor will ask about.
+        self.history.record(&report).await?;
 
         Ok(report)
     }

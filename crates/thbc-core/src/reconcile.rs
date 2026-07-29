@@ -65,6 +65,17 @@ pub struct ReconciliationReport {
     pub checked_at: i64,
 }
 
+impl Severity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Drift => "drift",
+            Self::Insolvent => "insolvent",
+        }
+    }
+}
+
 impl ReconciliationReport {
     #[must_use]
     pub const fn is_healthy(&self) -> bool {

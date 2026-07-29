@@ -64,6 +64,15 @@ pub struct Config {
     /// Starting attested reserve for the simulated ledger, in minor units.
     pub simulated_reserve_minor: u64,
 
+    /// How often the background reconciler runs, in seconds.
+    ///
+    /// Spec §9 says F2 is "checked hourly and daily", so 3600 is the default. Until
+    /// 2026-07-29 there was NO scheduler at all — `ReconciliationService::run` was
+    /// reachable only by calling the admin endpoint, so the documented cadence did
+    /// not exist. Zero disables the loop (useful in tests); it does not silently
+    /// mean "never" anywhere else, because startup logs which it chose.
+    pub reconcile_interval_secs: u64,
+
     /// Compliance auto-pass ceiling for the stub screener, in minor units.
     /// Deposits above it fail the screen, so the §5.4 encumbrance path is reachable.
     pub stub_kyc_ceiling_minor: u64,
@@ -134,6 +143,7 @@ impl Config {
             redemption_delta_secs: var_or("THBC_REDEMPTION_DELTA_SECS", 86_400i64)?,
             attestation_ttl_secs: var_or("THBC_ATTESTATION_TTL_SECS", 3_600i64)?,
             simulated_reserve_minor: var_or("THBC_SIMULATED_RESERVE_MINOR", 0u64)?,
+            reconcile_interval_secs: var_or("THBC_RECONCILE_INTERVAL_SECS", 3_600u64)?,
             stub_kyc_ceiling_minor: var_or("THBC_STUB_KYC_CEILING_MINOR", 1_000_000_000u64)?,
         };
         config.validate()?;
@@ -239,6 +249,7 @@ mod tests {
             redemption_delta_secs: 86_400,
             attestation_ttl_secs: 3_600,
             simulated_reserve_minor: 0,
+            reconcile_interval_secs: 3_600,
             stub_kyc_ceiling_minor: 1_000_000_000,
         }
     }

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use thbc_core::bank_ref::BankRef;
 use thbc_core::deposit::DepositState;
 use thbc_core::money::Thb;
-use thbc_core::ports::{Clock, LedgerPort, PortError};
+use thbc_core::ports::{Clock, LedgerPort, PortError, ReconciliationRepository};
 use thbc_core::redemption::RedemptionState;
 use thbc_ledger::SimulatedLedger;
 use thbc_logic::adapters::{FixedClock, RecordingPayoutQueue, StubCompliance};
@@ -32,7 +32,7 @@ use thbc_logic::{
     IssuanceOutcome, IssuanceService, ReconciliationService, RedemptionOutcome, RedemptionService,
     ReserveService,
 };
-use thbc_persistence::{InMemoryDepositRepo, InMemoryRedemptionRepo};
+use thbc_persistence::{InMemoryDepositRepo, InMemoryReconciliationRepo, InMemoryRedemptionRepo};
 
 const DELTA: i64 = 86_400;
 const TTL: i64 = 3_600;
@@ -42,6 +42,7 @@ struct Harness {
     redemption: RedemptionService,
     reserve: Arc<ReserveService>,
     reconciliation: ReconciliationService,
+    history: Arc<InMemoryReconciliationRepo>,
     ledger: Arc<SimulatedLedger>,
     payouts: Arc<RecordingPayoutQueue>,
     clock: Arc<FixedClock>,
@@ -64,6 +65,7 @@ impl Harness {
         let deposits = Arc::new(InMemoryDepositRepo::new());
         let redemptions = Arc::new(InMemoryRedemptionRepo::new());
         let payouts = Arc::new(RecordingPayoutQueue::new());
+        let history = Arc::new(InMemoryReconciliationRepo::new());
         let compliance = Arc::new(StubCompliance::new(
             Thb::from_baht(kyc_ceiling_baht).expect("fits"),
         ));
@@ -92,8 +94,10 @@ impl Harness {
                 deposits as Arc<dyn thbc_core::ports::DepositRepository>,
                 redemptions as Arc<dyn thbc_core::ports::RedemptionRepository>,
                 Arc::clone(&reserve),
+                Arc::clone(&history) as Arc<dyn thbc_core::ports::ReconciliationRepository>,
                 Arc::clone(&clock) as Arc<dyn Clock>,
             ),
+            history,
             reserve,
             ledger,
             payouts,
@@ -151,6 +155,61 @@ async fn a_deposit_issues_thbc_and_reconciles_clean() {
     let report = h.reconciliation.run().await.unwrap();
     assert!(report.is_healthy(), "{report:?}");
     assert_eq!(report.drift, 0);
+}
+
+// ---------------------------------------------------------------------------
+// F2 — the reconciliation HISTORY, not just the point-in-time check
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn every_reconciliation_run_is_recorded() {
+    // The `reconciliation_runs` table existed with a comment calling it "append-only
+    // history, so a breach that was later resolved is still visible to the regulator"
+    // — and nothing wrote to it. A point-in-time check that leaves no trace cannot
+    // answer the only question an auditor asks.
+    let h = Harness::new(1_000_000);
+    assert!(h.history.is_empty().unwrap());
+
+    h.reconciliation.run().await.unwrap();
+    h.reconciliation.run().await.unwrap();
+    assert_eq!(
+        h.history.len().unwrap(),
+        2,
+        "every run is appended, not just bad ones"
+    );
+}
+
+#[tokio::test]
+async fn a_resolved_breach_stays_visible_in_the_history() {
+    // The whole reason the history exists. After the breach is resolved, the current
+    // reconciliation reads healthy — and would be indistinguishable from a ledger that
+    // was never broken, if the earlier run had not been kept.
+    let h = Harness::new(1_000_000);
+    h.deposit("SCB-1", 1_000, "alice").await;
+
+    // Attestor honestly reports a reserve that no longer covers supply.
+    h.reserve.attest(Thb::from_baht(1).unwrap()).await.unwrap();
+    let bad = h.reconciliation.run().await.unwrap();
+    assert_eq!(bad.severity, thbc_core::reconcile::Severity::Insolvent);
+
+    // Reserve restored; the live check is clean again.
+    h.reserve
+        .attest(Thb::from_baht(1_000_000).unwrap())
+        .await
+        .unwrap();
+    let good = h.reconciliation.run().await.unwrap();
+    assert!(good.is_healthy());
+
+    assert_eq!(
+        h.reconciliation.unhealthy_runs().await.unwrap(),
+        1,
+        "the resolved insolvency must still be on the record"
+    );
+
+    let recent = h.history.recent(10).await.unwrap();
+    assert_eq!(recent.len(), 2);
+    assert!(recent[0].is_healthy(), "newest first");
+    assert!(!recent[1].is_healthy());
 }
 
 // ---------------------------------------------------------------------------

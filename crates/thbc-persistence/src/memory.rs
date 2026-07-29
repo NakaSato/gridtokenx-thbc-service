@@ -12,7 +12,10 @@ use async_trait::async_trait;
 use thbc_core::bank_ref::BankRefHash;
 use thbc_core::deposit::{Deposit, DepositState};
 use thbc_core::money::Thb;
-use thbc_core::ports::{DepositRepository, PortError, PortResult, RedemptionRepository};
+use thbc_core::ports::{
+    DepositRepository, PortError, PortResult, ReconciliationRepository, RedemptionRepository,
+};
+use thbc_core::reconcile::ReconciliationReport;
 use thbc_core::redemption::Redemption;
 
 fn poisoned() -> PortError {
@@ -314,5 +317,46 @@ mod tests {
         let due = repo.reclaimable(100).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].seq, 2);
+    }
+}
+
+/// In-memory reconciliation history. Append-only, like its Postgres counterpart —
+/// there is deliberately no way to remove a run, because the point of the record is
+/// that a drift which was later resolved stays visible.
+#[derive(Debug, Default)]
+pub struct InMemoryReconciliationRepo {
+    runs: Mutex<Vec<ReconciliationReport>>,
+}
+
+impl InMemoryReconciliationRepo {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> PortResult<usize> {
+        Ok(self.runs.lock().map_err(|_| poisoned())?.len())
+    }
+
+    pub fn is_empty(&self) -> PortResult<bool> {
+        Ok(self.len()? == 0)
+    }
+}
+
+#[async_trait]
+impl ReconciliationRepository for InMemoryReconciliationRepo {
+    async fn record(&self, report: &ReconciliationReport) -> PortResult<()> {
+        self.runs.lock().map_err(|_| poisoned())?.push(*report);
+        Ok(())
+    }
+
+    async fn recent(&self, limit: u32) -> PortResult<Vec<ReconciliationReport>> {
+        let runs = self.runs.lock().map_err(|_| poisoned())?;
+        Ok(runs.iter().rev().take(limit as usize).copied().collect())
+    }
+
+    async fn unhealthy_count(&self) -> PortResult<u64> {
+        let runs = self.runs.lock().map_err(|_| poisoned())?;
+        Ok(runs.iter().filter(|r| !r.is_healthy()).count() as u64)
     }
 }

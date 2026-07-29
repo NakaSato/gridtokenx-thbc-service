@@ -163,6 +163,24 @@ pub trait RedemptionRepository: Send + Sync {
     async fn pending_count(&self) -> PortResult<u32>;
 }
 
+/// Append-only reconciliation history (spec §9).
+///
+/// The F2 check is *detective*, so its value is entirely in the record it leaves: a
+/// drift that appeared and was resolved must still be visible afterwards, or the
+/// check tells a regulator nothing about the past. Hence append-only — there is no
+/// update or delete method, and adding one would remove the property.
+#[async_trait]
+pub trait ReconciliationRepository: Send + Sync {
+    async fn record(&self, report: &crate::reconcile::ReconciliationReport) -> PortResult<()>;
+
+    /// Most recent runs, newest first. Feeds the `E` regulator read surface.
+    async fn recent(&self, limit: u32) -> PortResult<Vec<crate::reconcile::ReconciliationReport>>;
+
+    /// Count of runs that were not `Ok`. A non-zero value with a currently-clean
+    /// reconciliation is exactly the case a point-in-time check would hide.
+    async fn unhealthy_count(&self) -> PortResult<u64>;
+}
+
 /// KYC / sanctions / AML. NDID is the intended primary (spec §9).
 #[async_trait]
 pub trait CompliancePort: Send + Sync {

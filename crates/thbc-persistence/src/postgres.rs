@@ -24,7 +24,10 @@ use sqlx::{PgPool, Row};
 use thbc_core::bank_ref::{BankRef, BankRefHash};
 use thbc_core::deposit::{Deposit, DepositState};
 use thbc_core::money::Thb;
-use thbc_core::ports::{DepositRepository, PortError, PortResult, RedemptionRepository};
+use thbc_core::ports::{
+    DepositRepository, PortError, PortResult, ReconciliationRepository, RedemptionRepository,
+};
+use thbc_core::reconcile::{ReconciliationReport, Severity};
 use thbc_core::redemption::{Redemption, RedemptionState};
 
 /// Postgres `BIGINT` is signed; `Thb` is not. Refuse rather than wrap.
@@ -398,5 +401,96 @@ mod tests {
         // the worst possible interpretation.
         assert!(from_i64(-1).is_err());
         assert_eq!(from_i64(0).unwrap(), Thb::ZERO);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation history
+// ---------------------------------------------------------------------------
+
+fn parse_severity(s: &str) -> PortResult<Severity> {
+    Ok(match s {
+        "ok" => Severity::Ok,
+        "drift" => Severity::Drift,
+        "insolvent" => Severity::Insolvent,
+        other => return Err(PortError::Rejected(format!("unknown severity {other:?}"))),
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct PgReconciliationRepository {
+    pool: PgPool,
+}
+
+impl PgReconciliationRepository {
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    fn row_to_report(row: &sqlx::postgres::PgRow) -> PortResult<ReconciliationReport> {
+        let severity: String = row.try_get("severity").map_err(map_sqlx)?;
+        let drift: i64 = row.try_get("drift").map_err(map_sqlx)?;
+        Ok(ReconciliationReport {
+            severity: parse_severity(&severity)?,
+            drift: i128::from(drift),
+            expected_supply: from_i64(row.try_get("expected_supply").map_err(map_sqlx)?)?,
+            ledger_supply: from_i64(row.try_get("ledger_supply").map_err(map_sqlx)?)?,
+            free_backing: from_i64(row.try_get("free_backing").map_err(map_sqlx)?)?,
+            shortfall: from_i64(row.try_get("shortfall").map_err(map_sqlx)?)?,
+            checked_at: row.try_get("checked_at").map_err(map_sqlx)?,
+        })
+    }
+}
+
+#[async_trait]
+impl ReconciliationRepository for PgReconciliationRepository {
+    async fn record(&self, report: &ReconciliationReport) -> PortResult<()> {
+        // `drift` is signed and can exceed i64 only if supply and the tally differ by
+        // more than 9.2e18 minor units, which BIGINT could not hold on either side
+        // anyway — so a lossy cast here is unreachable rather than tolerated.
+        let drift = i64::try_from(report.drift).map_err(|_| {
+            PortError::Rejected(format!("drift {} exceeds BIGINT range", report.drift))
+        })?;
+        sqlx::query(
+            "INSERT INTO reconciliation_runs
+               (checked_at, severity, drift, expected_supply, ledger_supply, free_backing, shortfall)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(report.checked_at)
+        .bind(report.severity.as_str())
+        .bind(drift)
+        .bind(to_i64(report.expected_supply)?)
+        .bind(to_i64(report.ledger_supply)?)
+        .bind(to_i64(report.free_backing)?)
+        .bind(to_i64(report.shortfall)?)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn recent(&self, limit: u32) -> PortResult<Vec<ReconciliationReport>> {
+        let rows = sqlx::query(
+            "SELECT checked_at, severity, drift, expected_supply, ledger_supply,
+                    free_backing, shortfall
+             FROM reconciliation_runs ORDER BY checked_at DESC LIMIT $1",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(Self::row_to_report).collect()
+    }
+
+    async fn unhealthy_count(&self) -> PortResult<u64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*)::BIGINT AS n FROM reconciliation_runs WHERE severity <> 'ok'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        let n: i64 = row.try_get("n").map_err(map_sqlx)?;
+        Ok(u64::try_from(n).unwrap_or(0))
     }
 }

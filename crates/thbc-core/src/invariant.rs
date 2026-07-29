@@ -101,9 +101,12 @@ pub const INVARIANTS: [Invariant; 9] = [
         status: Status::Partial,
         enforcement: Enforcement::OffChain,
         gap: Some(
-            "detective, not preventive — the reconciler reports drift hourly/daily but no \
-             write is rejected for causing it; also currently reconciles against the \
-             simulated ledger, since issue/redeem do not exist on-chain",
+            "detective, not preventive — no write is rejected for causing drift; the \
+             reconciler only reports it afterwards. It now runs on an interval and \
+             appends every run to `reconciliation_runs`, so a breach that was later \
+             resolved stays visible; until 2026-07-29 there was no scheduler at all and \
+             nothing wrote that table, so spec §9's \"checked hourly and daily\" was \
+             true of no deployment",
         ),
     },
     Invariant {

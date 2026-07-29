@@ -21,7 +21,7 @@ at `GET /v1/admin/invariants`. Prefer it to any prose, including this file. Toda
 | Invariant | Status | Enforced by |
 | :-- | :-- | :-- |
 | F1 reserve sufficiency | partial | on-chain in `issue_thbc`, but against `attested_reserve` only — `reserve_encumbered` is off-chain |
-| F2 issuance conservation | partial | off-chain, **detective not preventive** |
+| F2 issuance conservation | partial | off-chain, **detective not preventive** — runs on an interval, appends every run to `reconciliation_runs` |
 | F3 deposit idempotency | **enforced** | the Solana **runtime** — `[b"deposit", H(bank_ref)]` created with `init` in the same instruction as the mint |
 | F4 burn-before-wire | partial | the redemption state machine; no fiat rail to test against |
 | F5 attestation freshness | **enforced** | on-chain in `issue_thbc`, checked before the F1 ceiling |

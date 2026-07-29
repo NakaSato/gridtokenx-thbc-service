@@ -16,7 +16,8 @@ use anyhow::{Context, Result};
 use thbc_api::AppState;
 use thbc_core::money::Thb;
 use thbc_core::ports::{
-    Clock, CompliancePort, DepositRepository, LedgerPort, PayoutPort, RedemptionRepository,
+    Clock, CompliancePort, DepositRepository, LedgerPort, PayoutPort, ReconciliationRepository,
+    RedemptionRepository,
 };
 use thbc_ledger::{ChainBridgeConfig, ChainBridgeLedger, SimulatedLedger};
 use thbc_logic::adapters::{
@@ -26,7 +27,8 @@ use thbc_logic::{
     IssuanceService, ReconciliationService, RedemptionService, ReserveService, TreasuryService,
 };
 use thbc_persistence::{
-    InMemoryDepositRepo, InMemoryRedemptionRepo, PgDepositRepository, PgRedemptionRepository,
+    InMemoryDepositRepo, InMemoryReconciliationRepo, InMemoryRedemptionRepo, PgDepositRepository,
+    PgReconciliationRepository, PgRedemptionRepository,
 };
 use tracing::{info, warn};
 
@@ -36,32 +38,7 @@ use crate::config::{Config, LedgerMode};
 pub async fn build(config: &Config) -> Result<AppState> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
-    // ---- Persistence ------------------------------------------------------
-    let (deposits, redemptions): (Arc<dyn DepositRepository>, Arc<dyn RedemptionRepository>) =
-        if let Some(url) = &config.database_url {
-            run_migrations(config, url).await?;
-
-            let pool = sqlx::PgPool::connect(url)
-                .await
-                .context("connect to the THBC database")?;
-            info!("connected to Postgres");
-            (
-                Arc::new(PgDepositRepository::new(pool.clone())),
-                Arc::new(PgRedemptionRepository::new(pool)),
-            )
-        } else {
-            // Only reachable in simulated mode — `Config::validate` rejects a missing
-            // DATABASE_URL under chain-bridge.
-            warn!(
-                "no DATABASE_URL: using in-memory repositories. All deposit and \
-                 redemption records are lost on restart, and with them the off-chain \
-                 half of F3 and the entire F2 tally."
-            );
-            (
-                Arc::new(InMemoryDepositRepo::new()),
-                Arc::new(InMemoryRedemptionRepo::new()),
-            )
-        };
+    let (deposits, redemptions, history) = build_repositories(config).await?;
 
     // ---- Ledger -----------------------------------------------------------
     let ledger: Arc<dyn LedgerPort> = match config.ledger_mode {
@@ -142,12 +119,55 @@ pub async fn build(config: &Config) -> Result<AppState> {
             Arc::clone(&deposits),
             Arc::clone(&redemptions),
             Arc::clone(&reserve),
+            history,
             Arc::clone(&clock),
         )),
         treasury: Arc::new(TreasuryService::new(ledger)),
         reserve,
         simulated: config.is_simulated(),
     })
+}
+
+/// The three repositories, Postgres-backed or in-memory.
+///
+/// Extracted from [`build`] purely for length. Grouped rather than built inline so the
+/// Postgres/in-memory choice is made ONCE — three independent `if let` blocks would let
+/// a future edit end up with, say, durable deposits and an in-memory reconciliation
+/// history, which would silently defeat the append-only property that history exists
+/// for.
+type Repositories = (
+    Arc<dyn DepositRepository>,
+    Arc<dyn RedemptionRepository>,
+    Arc<dyn ReconciliationRepository>,
+);
+
+async fn build_repositories(config: &Config) -> Result<Repositories> {
+    if let Some(url) = &config.database_url {
+        run_migrations(config, url).await?;
+
+        let pool = sqlx::PgPool::connect(url)
+            .await
+            .context("connect to the THBC database")?;
+        info!("connected to Postgres");
+        Ok((
+            Arc::new(PgDepositRepository::new(pool.clone())),
+            Arc::new(PgRedemptionRepository::new(pool.clone())),
+            Arc::new(PgReconciliationRepository::new(pool)),
+        ))
+    } else {
+        // Only reachable in simulated mode — `Config::validate` rejects a missing
+        // DATABASE_URL under chain-bridge.
+        warn!(
+            "no DATABASE_URL: using in-memory repositories. All deposit and redemption \
+             records are lost on restart, and with them the off-chain half of F3, the \
+             entire F2 tally, and the reconciliation history."
+        );
+        Ok((
+            Arc::new(InMemoryDepositRepo::new()),
+            Arc::new(InMemoryRedemptionRepo::new()),
+            Arc::new(InMemoryReconciliationRepo::new()),
+        ))
+    }
 }
 
 /// Apply migrations on a **dedicated, short-lived pool**, then drop it.
