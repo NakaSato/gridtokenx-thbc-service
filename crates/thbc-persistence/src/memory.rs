@@ -84,6 +84,15 @@ impl DepositRepository for InMemoryDepositRepo {
             .map_err(PortError::Domain)
     }
 
+    async fn held(&self) -> PortResult<Vec<Deposit>> {
+        let rows = self.rows.lock().map_err(|_| poisoned())?;
+        Ok(rows
+            .values()
+            .filter(|d| d.state == DepositState::Screened)
+            .cloned()
+            .collect())
+    }
+
     async fn total_issued(&self) -> PortResult<Thb> {
         let rows = self.rows.lock().map_err(|_| poisoned())?;
         rows.values()

@@ -189,6 +189,45 @@ impl IssuanceService {
         }
     }
 
+    /// Retry every deposit stuck in `Screened`.
+    ///
+    /// Spec §5.4 says a deposit refused for a stale attestation is "held, retried
+    /// after refresh". Nothing performed that retry until 2026-07-29: `retry_held`
+    /// existed and had tests, but no scheduler and no endpoint reached it, so a
+    /// deposit held during a stale window stayed held forever — with the holder's
+    /// fiat already sitting in the reserve account.
+    ///
+    /// Returns `(retried, issued)`. Errors on individual deposits are logged and the
+    /// sweep continues: one deposit that cannot be issued must not block the rest,
+    /// and the common case for a held batch is that they all fail together until the
+    /// attestation refreshes and then all succeed.
+    #[instrument(skip(self))]
+    pub async fn retry_all_held(&self) -> PortResult<(usize, usize)> {
+        let held = self.deposits.held().await?;
+        if held.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let mut issued = 0usize;
+        for deposit in &held {
+            match self.retry_held(&deposit.bank_ref).await {
+                Ok(IssuanceOutcome::Issued { .. }) => issued += 1,
+                Ok(IssuanceOutcome::Held { reason }) => {
+                    // Expected while the reserve is stale or short — the deposit stays
+                    // held and is picked up again next sweep.
+                    info!(nullifier = %deposit.nullifier(), "still held: {reason}");
+                }
+                Ok(other) => info!(nullifier = %deposit.nullifier(), "retry gave {other:?}"),
+                Err(e) => warn!(nullifier = %deposit.nullifier(), "retry failed: {e}"),
+            }
+        }
+
+        if issued > 0 {
+            info!(retried = held.len(), issued, "held deposits released");
+        }
+        Ok((held.len(), issued))
+    }
+
     /// Retry a held deposit after an attestation refresh (§5.4).
     #[instrument(skip(self))]
     pub async fn retry_held(&self, bank_ref: &BankRef) -> PortResult<IssuanceOutcome> {

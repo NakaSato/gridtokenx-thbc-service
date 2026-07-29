@@ -184,6 +184,34 @@ impl DepositRepository for PgDepositRepository {
         from_i64(row.try_get("total").map_err(map_sqlx)?)
     }
 
+    async fn held(&self) -> PortResult<Vec<Deposit>> {
+        // Oldest first: a deposit held longest has had the holder's fiat sitting in the
+        // reserve the longest, so it is the one to unstick first.
+        let rows = sqlx::query(
+            "SELECT bank_ref, amount_minor, beneficiary, beneficiary_wallet, state, observed_at
+             FROM deposits WHERE state = 'screened' ORDER BY observed_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+
+        rows.iter()
+            .map(|row| {
+                let bank_ref: String = row.try_get("bank_ref").map_err(map_sqlx)?;
+                let amount: i64 = row.try_get("amount_minor").map_err(map_sqlx)?;
+                let state: String = row.try_get("state").map_err(map_sqlx)?;
+                Ok(Deposit {
+                    bank_ref: BankRef::new(bank_ref).map_err(PortError::Domain)?,
+                    amount: from_i64(amount)?,
+                    beneficiary: row.try_get("beneficiary").map_err(map_sqlx)?,
+                    beneficiary_wallet: row.try_get("beneficiary_wallet").map_err(map_sqlx)?,
+                    state: parse_deposit_state(&state)?,
+                    observed_at: row.try_get("observed_at").map_err(map_sqlx)?,
+                })
+            })
+            .collect()
+    }
+
     async fn total_issued(&self) -> PortResult<Thb> {
         let row = sqlx::query(
             "SELECT COALESCE(SUM(amount_minor), 0)::BIGINT AS total

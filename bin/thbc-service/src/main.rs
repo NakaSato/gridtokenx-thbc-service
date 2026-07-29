@@ -113,6 +113,7 @@ fn spawn_reconciler(state: &thbc_api::AppState, interval_secs: u64) {
     }
 
     let reconciliation = std::sync::Arc::clone(&state.reconciliation);
+    let issuance = std::sync::Arc::clone(&state.issuance);
     let redemption = std::sync::Arc::clone(&state.redemption);
     info!(interval_secs, "reconciler scheduled");
 
@@ -131,6 +132,17 @@ fn spawn_reconciler(state: &thbc_api::AppState, interval_secs: u64) {
                 // — so re-logging the healthy case here would just be noise.
                 Ok(_) => {}
                 Err(e) => error!("reconciliation run failed: {e}"),
+            }
+
+            // Spec §5.4's "held, retried after refresh". The refresh is what unsticks
+            // them, and nothing else polls — so this is the only thing that ever
+            // releases a deposit held during a stale-attestation window.
+            match issuance.retry_all_held().await {
+                Ok((0, _)) => {}
+                Ok((retried, issued)) => {
+                    info!(retried, issued, "retried held deposits");
+                }
+                Err(e) => error!("held-deposit retry sweep failed: {e}"),
             }
 
             match redemption.sweep_reclaimable().await {

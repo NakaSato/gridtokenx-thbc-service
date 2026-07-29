@@ -139,6 +139,14 @@ pub trait DepositRepository: Send + Sync {
     /// Total fiat cleared but backing nothing — feeds `reserve_encumbered`.
     async fn total_encumbered(&self) -> PortResult<Thb>;
 
+    /// Deposits stuck in `Screened` — compliance passed, issuance did not happen.
+    ///
+    /// These are the ones spec §5.4 says are "held, retried after refresh". Without a
+    /// way to enumerate them the retry path is unreachable, and a deposit held during
+    /// a stale-attestation window stays held forever with the holder's fiat already in
+    /// the reserve.
+    async fn held(&self) -> PortResult<Vec<Deposit>>;
+
     /// Σ of confirmed issuances, for F2.
     async fn total_issued(&self) -> PortResult<Thb>;
 }

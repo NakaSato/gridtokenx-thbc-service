@@ -158,6 +158,61 @@ async fn a_deposit_issues_thbc_and_reconciles_clean() {
 }
 
 // ---------------------------------------------------------------------------
+// §5.4 — held deposits are actually retried
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn held_deposits_are_released_by_the_retry_sweep() {
+    // `retry_held` existed with tests and had NO caller outside them — no scheduler,
+    // no endpoint. A deposit held during a stale-attestation window stayed held
+    // forever, with the holder's fiat already in the reserve account. This is the
+    // sweep that releases it.
+    let h = Harness::new(1_000_000);
+    h.warp(TTL + 1); // attestation stale
+
+    for r in ["SCB-1", "SCB-2"] {
+        let held = h.deposit(r, 1_000, "alice").await;
+        assert!(matches!(held, IssuanceOutcome::Held { .. }), "{held:?}");
+    }
+    assert_eq!(h.ledger.supply().unwrap(), Thb::ZERO);
+
+    // Sweeping while still stale must change nothing and must not consume the refs.
+    let (retried, issued) = h.issuance.retry_all_held().await.unwrap();
+    assert_eq!((retried, issued), (2, 0), "both still held, neither issued");
+
+    // The attestor refreshes; the next sweep releases both.
+    h.reserve
+        .attest(Thb::from_baht(1_000_000).unwrap())
+        .await
+        .unwrap();
+    let (retried, issued) = h.issuance.retry_all_held().await.unwrap();
+    assert_eq!((retried, issued), (2, 2));
+    assert_eq!(h.ledger.supply().unwrap(), Thb::from_baht(2_000).unwrap());
+
+    // Nothing is held any more, so a third sweep is a no-op rather than a re-issue.
+    let (retried, issued) = h.issuance.retry_all_held().await.unwrap();
+    assert_eq!(
+        (retried, issued),
+        (0, 0),
+        "issued deposits must not be swept again"
+    );
+    assert_eq!(h.ledger.supply().unwrap(), Thb::from_baht(2_000).unwrap());
+}
+
+#[tokio::test]
+async fn the_retry_sweep_ignores_encumbered_and_issued_deposits() {
+    // Only `Screened` is retryable. An encumbered deposit failed compliance and must
+    // never be retried into an issuance; an issued one must never be issued twice.
+    let h = Harness::with_kyc_ceiling(1_000_000, 500_000);
+    h.deposit("SCB-OK", 1_000, "alice").await; // issued
+    h.deposit("SCB-KYC", 600_000, "mallory").await; // encumbered
+
+    let (retried, issued) = h.issuance.retry_all_held().await.unwrap();
+    assert_eq!((retried, issued), (0, 0), "neither state is held");
+    assert_eq!(h.ledger.supply().unwrap(), Thb::from_baht(1_000).unwrap());
+}
+
+// ---------------------------------------------------------------------------
 // F2 — the reconciliation HISTORY, not just the point-in-time check
 // ---------------------------------------------------------------------------
 

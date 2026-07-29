@@ -40,6 +40,16 @@ pub enum DepositState {
     Encumbered,
     /// Bank and webhook disagree on the amount. Reconciliation must resolve it before
     /// anything else happens; no issuance from here (§5.4).
+    ///
+    /// **UNREACHABLE IN THE CURRENT SYSTEM.** Entering this state requires comparing
+    /// the webhook's claimed amount against the bank's own statement, and there is no
+    /// bank adapter (spec §12) — so nothing calls [`Deposit::dispute`] outside this
+    /// module's tests. The state machine models §5.4 correctly and the transitions are
+    /// tested; what is missing is the feed that would trigger them.
+    ///
+    /// Documented here rather than deleted because deleting it would make the gap
+    /// invisible: a reader would see a state machine with no dispute handling and
+    /// assume none was needed, rather than that the input does not exist yet.
     Disputed,
 }
 

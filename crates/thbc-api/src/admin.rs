@@ -119,7 +119,12 @@ async fn reserve(State(state): State<AppState>) -> ApiResult<Json<ReserveView>> 
 #[instrument(skip(state))]
 async fn reconciliation(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let r = state.reconciliation.run().await?;
+    // The history is the point of the check, not the current reading: a drift that
+    // appeared and was resolved is invisible to a point-in-time result.
+    let unhealthy_runs = state.reconciliation.unhealthy_runs().await?;
+
     Ok(Json(serde_json::json!({
+        "unhealthy_runs_recorded": unhealthy_runs,
         "severity": r.severity,
         "drift": r.drift,
         "expected_supply_minor": r.expected_supply.minor(),
