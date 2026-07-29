@@ -43,12 +43,17 @@ impl ReserveService {
     /// The reserve as this service understands it: the chain's attestation, with
     /// encumbrance from our own deposit records.
     ///
-    /// The two halves come from different places on purpose, and that is a disclosed
-    /// weakness rather than a design flourish. `reserve_encumbered` is not an
-    /// on-chain field (spec §4.1 marks it NEW), so the chain's F1 ceiling is
-    /// `attested_reserve` while the ceiling reported here is
-    /// `attested_reserve − encumbered`. **This service is stricter than the chain.**
-    /// A caller that bypasses it gets the looser ceiling.
+    /// The two halves still come from different places — the attestation is read from
+    /// the chain, the encumbrance from our own deposit records, which remain the only
+    /// place that knows a deposit cleared the bank and then failed KYC.
+    ///
+    /// What changed on 2026-07-29: `reserve_encumbered` is now an on-chain field, and
+    /// [`ReserveService::attest`] publishes this same number with every attestation.
+    /// So the chain enforces `attested_reserve − reserve_encumbered` too, and **this
+    /// service is no longer stricter than the chain** — a caller that bypasses it now
+    /// hits the same ceiling rather than a looser one. The remaining gap is temporal,
+    /// not structural: the chain's copy is as fresh as the last attestation, so an
+    /// encumbrance recorded since then is known here first.
     #[instrument(skip(self))]
     pub async fn current(&self) -> PortResult<ReserveState> {
         let snapshot = self.ledger.snapshot().await?;
@@ -129,7 +134,15 @@ impl ReserveService {
         // for a payout: an operator who believes the attestation landed will not
         // re-send it, and issuance stays halted under F5 for a reason nothing
         // reports.
-        match self.ledger.update_attestation(reserve).await? {
+        // Read the encumbrance from our own deposit records and publish it WITH the
+        // reserve, so the chain's F1 ceiling is the same one this service enforces.
+        //
+        // Unlike the advisory pre-check above, a failure here is fatal to the
+        // attestation: attesting a reserve without its encumbrance would write a
+        // ceiling that is too loose by exactly the encumbered amount, which is worse
+        // than not attesting at all. A missed refresh only halts issuance under F5.
+        let encumbered = self.deposits.total_encumbered().await?;
+        match self.ledger.update_attestation(reserve, encumbered).await? {
             ConfirmOutcome::Confirmed => {
                 info!(reserve = reserve.minor(), "attestation refreshed");
                 Ok(())

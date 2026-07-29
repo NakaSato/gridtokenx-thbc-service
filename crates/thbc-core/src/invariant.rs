@@ -80,17 +80,29 @@ pub const INVARIANTS: [Invariant; 9] = [
         // that increases supply. `PegBreach` has a call site again — it had none
         // between the F6 fix and that commit.
         //
-        // Still `Partial`: the on-chain ceiling is `attested_reserve`, NOT
-        // `attested_reserve - reserve_encumbered` as §4.1 specifies, because that field
-        // does not fit in the 14 spare padding bytes on the zero-copy `Treasury`.
-        status: Status::Partial,
+        // `Enforced` as of 2026-07-29: the on-chain ceiling is now
+        // `attested_reserve - reserve_encumbered`, exactly as §4.1 specifies.
+        //
+        // The field was previously called impossible without a layout change, which was
+        // wrong in one specific way: a `Pubkey` (32 bytes) does not fit the spare
+        // padding, but `reserve_encumbered` is a `u64`. The stored bumps end at offset
+        // 259, the next 8-aligned offset is 264, and 264 + 8 = 272 — so it lands in the
+        // tail of the old `_padding` without moving a single existing field. The
+        // `Treasury` struct is STILL 272 bytes, every deployed PDA keeps deserializing,
+        // and no re-init or realloc was needed. Pinned by `carved_fields_kept_their_offsets`
+        // in the program's `state.rs`.
+        //
+        // On accounts initialized before the field existed those bytes are zero, so the
+        // ceiling evaluates to `attested_reserve - 0` — identical to the old behaviour
+        // until an attestation reports an encumbrance. `ReserveService::attest` now
+        // publishes `total_encumbered()` with every attestation, so the chain enforces
+        // the same ceiling this service does.
+        //
+        // Verified against the compiled program by four litesvm cases, three of which
+        // die if the subtraction is removed (mutation-checked 2026-07-29).
+        status: Status::Enforced,
         enforcement: Enforcement::OnChain,
-        gap: Some(
-            "on-chain ceiling is `attested_reserve`, not `attested_reserve - \
-             reserve_encumbered`: fiat that cleared the bank and then failed KYC still \
-             counts as free backing on-chain. This service enforces the tighter ceiling \
-             from its own records and is therefore stricter than the chain",
-        ),
+        gap: None,
     },
     Invariant {
         id: "F2",
@@ -368,7 +380,13 @@ mod tests {
         // change (user-derived KDF, client-held keys, or retiring the claim outright),
         // never a doc edit.
         assert_eq!(get("F8").unwrap().status, Status::Violated);
-        assert_eq!(get("F1").unwrap().status, Status::Partial);
+        // F1 moved Partial -> Enforced on 2026-07-29, when `reserve_encumbered`
+        // landed on-chain in the tail of the old `_padding` (offset 264, struct still
+        // 272 bytes, no re-init). The ceiling is now `attested_reserve -
+        // reserve_encumbered` exactly as spec §4.1 requires. Do NOT flip this back
+        // without also removing the field and its four litesvm cases.
+        assert_eq!(get("F1").unwrap().status, Status::Enforced);
+        assert_eq!(get("F1").unwrap().enforcement, Enforcement::OnChain);
         assert_eq!(get("F3").unwrap().status, Status::Enforced);
         assert_eq!(get("F3").unwrap().enforcement, Enforcement::Runtime);
         assert_eq!(get("F5").unwrap().status, Status::Enforced);
@@ -393,14 +411,17 @@ mod tests {
 
     #[test]
     fn disclosed_gaps_are_the_six_open_invariants() {
-        // F1, F2, F4, F6, F8 are short of Enforced for reasons about the
-        // OFF-chain half or about legacy state, not missing code.
+        // F2, F4, F6, F8 are short of Enforced for reasons about the OFF-chain half
+        // or about legacy state, not missing code.
+        //
+        // F1 LEFT this list on 2026-07-29: `reserve_encumbered` is on-chain and the
+        // ceiling is now the specified `attested_reserve - reserve_encumbered`.
         //
         // F9 joined them on 2026-07-29. It had claimed Enforced/OnChain citing a
         // check in `initialize` that does not exist — the program never compares
         // attestor to authority, and the deployed treasury has them equal.
-        // Only F3, F5 and F7 are claimable as guarantees.
+        // F1, F3, F5 and F7 are claimable as guarantees.
         let gaps: Vec<_> = disclosed_gaps().iter().map(|i| i.id).collect();
-        assert_eq!(gaps, ["F1", "F2", "F4", "F6", "F8", "F9"]);
+        assert_eq!(gaps, ["F2", "F4", "F6", "F8", "F9"]);
     }
 }

@@ -118,8 +118,16 @@ pub trait LedgerPort: Send + Sync {
     /// `reclaim_redemption(id)` — user-signed, after Δ. Restores the THBC.
     async fn reclaim_redemption(&self, user: &str, seq: u64) -> PortResult<ConfirmOutcome>;
 
-    /// `update_attestation(reserve)` — attestor-signed.
-    async fn update_attestation(&self, reserve: Thb) -> PortResult<ConfirmOutcome>;
+    /// `update_attestation(reserve, encumbered)` — attestor-signed.
+    ///
+    /// Both figures go in ONE call because F1's ceiling is their difference. A
+    /// separate encumbrance setter would allow a fresh reserve to land beside a stale
+    /// encumbrance, which is precisely the over-issuance window the field closes.
+    async fn update_attestation(
+        &self,
+        reserve: Thb,
+        encumbered: Thb,
+    ) -> PortResult<ConfirmOutcome>;
 }
 
 #[async_trait]

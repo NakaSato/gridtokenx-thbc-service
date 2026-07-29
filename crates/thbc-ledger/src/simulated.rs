@@ -290,10 +290,24 @@ impl LedgerPort for SimulatedLedger {
         Ok(ConfirmOutcome::Confirmed)
     }
 
-    async fn update_attestation(&self, reserve: Thb) -> PortResult<ConfirmOutcome> {
+    async fn update_attestation(
+        &self,
+        reserve: Thb,
+        encumbered: Thb,
+    ) -> PortResult<ConfirmOutcome> {
         let mut s = self.lock()?;
         let now = s.now;
         s.reserve.attestation.reserve = reserve;
+        // Mirror the chain: the simulator's F1 ceiling must be `reserve - encumbered`
+        // too, or the simulated ledger would accept issuances the real treasury
+        // rejects and the simulation would be optimistic about exactly the invariant
+        // it is meant to model.
+        //
+        // This lives on `ReserveState`, not on `Attestation`, because
+        // `ReserveState::check_issuance` already compares against `free_backing()`
+        // (= reserve − encumbered). So the ceiling logic needed no change here at all;
+        // the encumbrance simply had no writer until now.
+        s.reserve.encumbered = encumbered;
         s.reserve.attestation.ts = now;
         Ok(ConfirmOutcome::Confirmed)
     }
@@ -366,10 +380,63 @@ mod tests {
         let amount = Thb::from_baht(1).unwrap();
         assert!(l.issue("alice", amount, nullifier("A")).await.is_err());
 
-        l.update_attestation(Thb::from_baht(1_000_000).unwrap())
+        l.update_attestation(Thb::from_baht(1_000_000).unwrap(), Thb::ZERO)
             .await
             .unwrap();
         l.issue("alice", amount, nullifier("B")).await.unwrap();
+    }
+
+    /// The encumbrance is not decoration: it must tighten the ceiling the simulator
+    /// enforces, or simulated runs would pass issuances the real treasury refuses.
+    #[tokio::test]
+    async fn f1_encumbered_fiat_does_not_back_issuance() {
+        let l = ledger();
+        l.set_now(10_000).unwrap();
+        // 1_000 baht attested, 900 of it encumbered => 100 baht of real backing.
+        l.update_attestation(
+            Thb::from_baht(1_000).unwrap(),
+            Thb::from_baht(900).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // 500 fits under the bare reserve and is refused against free backing.
+        assert!(
+            l.issue("alice", Thb::from_baht(500).unwrap(), nullifier("A"))
+                .await
+                .is_err(),
+            "encumbered fiat must not back issuance"
+        );
+        // 100 is exactly the free backing and must be allowed.
+        l.issue("alice", Thb::from_baht(100).unwrap(), nullifier("B"))
+            .await
+            .unwrap();
+    }
+
+    /// Re-attesting with a smaller encumbrance must widen the ceiling again — the
+    /// field is last-writer-wins, not a high-water mark.
+    #[tokio::test]
+    async fn f1_releasing_an_encumbrance_restores_headroom() {
+        let l = ledger();
+        l.set_now(10_000).unwrap();
+        l.update_attestation(
+            Thb::from_baht(1_000).unwrap(),
+            Thb::from_baht(900).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(l
+            .issue("alice", Thb::from_baht(500).unwrap(), nullifier("A"))
+            .await
+            .is_err());
+
+        // KYC clears: the encumbrance is released.
+        l.update_attestation(Thb::from_baht(1_000).unwrap(), Thb::ZERO)
+            .await
+            .unwrap();
+        l.issue("alice", Thb::from_baht(500).unwrap(), nullifier("B"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

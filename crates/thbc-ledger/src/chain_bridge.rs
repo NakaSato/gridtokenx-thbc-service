@@ -425,7 +425,11 @@ impl LedgerPort for ChainBridgeLedger {
         ))
     }
 
-    async fn update_attestation(&self, reserve: Thb) -> PortResult<ConfirmOutcome> {
+    async fn update_attestation(
+        &self,
+        reserve: Thb,
+        encumbered: Thb,
+    ) -> PortResult<ConfirmOutcome> {
         let correlation_id = uuid::Uuid::new_v4().to_string();
         let reply_subject = format!("chain.attest.result.{correlation_id}");
 
@@ -437,6 +441,7 @@ impl LedgerPort for ChainBridgeLedger {
             idempotency_key: String::new(),
             reply_subject: reply_subject.clone(),
             attested_reserve_minor: reserve.minor(),
+            reserve_encumbered_minor: encumbered.minor(),
             service_identity: self.config.service_identity.clone(),
             created_at_ms: Self::now_ms(),
             auth: None,
