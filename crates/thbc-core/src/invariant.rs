@@ -343,13 +343,34 @@ pub const INVARIANTS: [Invariant; 9] = [
         // `reserve::TreasuryKeys::new` still rejects equality, but that is this
         // service refusing to submit, not the chain refusing the transaction:
         // advisory, and a different caller bypasses it entirely.
+        //
+        // There is a SECOND, human-level version of the same gap, added when the
+        // admin surface was put behind IAM (2026-07-30). Spec §9 asks for
+        // SSO + MFA + 4-eyes on `/v1/admin`. What is deployed is:
+        //
+        //   - an IAM-issued JWT whose `role` claim is `admin` (iam-core
+        //     `Role::Admin`, not self-assignable — `AuthService::register`
+        //     refuses it), and
+        //   - `ip-restriction` to internal CIDRs at APISIX route 61, plus a
+        //     fail-closed header assertion in `thbc-api::admin`.
+        //
+        // IAM has no MFA of any kind, so that token is SINGLE-FACTOR, and there
+        // is no dual control: one operator identity can call
+        // `POST /v1/admin/attestation` (which sets the ceiling F1 enforces) and
+        // `POST /v1/admin/redemptions/confirm` (the only operation that burns
+        // supply) by itself. On-chain attestor/authority separation and human
+        // 4-eyes are different controls, but they fail the same way — one party
+        // deciding alone what the reserve is — which is why both live under F9.
         status: Status::DesignOnly,
         enforcement: Enforcement::Unenforced,
         gap: Some(
             "initialize does not compare attestor to authority and the treasury program has \
              no error for it; the deployed localnet treasury has attestor == authority. \
              Enforcing this requires a separate Vault key for attestation, because the \
-             bridge signs both roles with platform_admin.",
+             bridge signs both roles with platform_admin. Separately, the human admin \
+             surface is single-factor and has no 4-eyes: IAM has no MFA, so one operator \
+             token can both attest a reserve and confirm a burn. The compensating control \
+             is network scope (internal CIDRs only), not a second factor or a second party.",
         ),
     },
 ];

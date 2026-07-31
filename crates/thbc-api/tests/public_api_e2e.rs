@@ -17,8 +17,13 @@
 //! it says nothing about what the chain does. Do not read F7 coverage off this file.
 //!
 //! Authentication is absent on purpose: JWT is terminated at APISIX and this crate
-//! never verifies it (`lib.rs:11-13`). These tests exercise the surface an
-//! authenticated caller reaches, not the gateway in front of it.
+//! never verifies it (`lib.rs`). These tests exercise the surface an authenticated
+//! caller reaches, not the gateway in front of it.
+//!
+//! The one exception is the **admin gate** suite below. That is not
+//! authentication either — it asserts the fail-closed check that the gateway's
+//! admin route ran (`admin::require_admin_role`), which is the difference between
+//! a misrouted path serving reserve attestation and refusing it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -32,7 +37,8 @@ use thbc_core::bank_ref::BankRef;
 use thbc_core::exchange::ExchangeParams;
 use thbc_core::money::{Grx, Thb};
 use thbc_core::ports::{
-    Clock, DepositRepository, LedgerPort, PayoutPort, ReconciliationRepository, RedemptionRepository,
+    Clock, DepositRepository, LedgerPort, PayoutPort, ReconciliationRepository,
+    RedemptionRepository,
 };
 use thbc_ledger::SimulatedLedger;
 use thbc_logic::adapters::{FixedClock, RecordingPayoutQueue, StubCompliance};
@@ -194,9 +200,43 @@ impl Api {
             .expect("read body");
         // Router-level rejections (a bad path segment, an unparseable body) answer in
         // plain text, not JSON. Keep them readable instead of panicking on parse.
-        let json = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-            json!({ "raw": String::from_utf8_lossy(&bytes).to_string() })
-        });
+        let json = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }));
+        (status, json)
+    }
+
+    /// Send with an explicit gateway role header — the admin gate's only input.
+    /// `None` models a request that never passed through APISIX route 61.
+    async fn send_as(
+        &self,
+        method: Method,
+        uri: &str,
+        role: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(role) = role {
+            req = req.header(thbc_api::admin::ADMIN_ROLE_HEADER, role);
+        }
+        let body = match body {
+            Some(v) => {
+                req = req.header(header::CONTENT_TYPE, "application/json");
+                Body::from(serde_json::to_vec(&v).expect("serialize body"))
+            }
+            None => Body::empty(),
+        };
+        let res = self
+            .app
+            .clone()
+            .oneshot(req.body(body).expect("build request"))
+            .await
+            .expect("router responded");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }));
         (status, json)
     }
 }
@@ -207,6 +247,122 @@ fn assert_code(body: &Value, expected: &str) {
     assert_eq!(
         body["code"], expected,
         "wrong error code; full body: {body}"
+    );
+}
+
+// ===========================================================================
+// ADMIN GATE
+// ===========================================================================
+
+/// Every admin route refuses a request that did not come through the gateway's
+/// admin route — the regulator reads included, since they disclose the reserve and
+/// the reconciliation history.
+#[tokio::test]
+async fn admin_routes_refuse_a_request_without_the_gateway_role_header() {
+    let h = Api::new(1_000);
+
+    for uri in [
+        "/v1/admin/invariants",
+        "/v1/admin/reserve",
+        "/v1/admin/reconciliation",
+        "/v1/admin/redemptions/queue",
+    ] {
+        let (status, body) = h.send_as(Method::GET, uri, None, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} must be gated");
+        assert_code(&body, "admin_role_required");
+    }
+}
+
+/// A retail token reaching the admin surface is the escalation this gate exists
+/// for: `consumer` is the default role every registered account holds.
+#[tokio::test]
+async fn admin_routes_refuse_non_admin_roles() {
+    let h = Api::new(1_000);
+
+    for role in ["consumer", "prosumer", "Admin", "admin ", "api-gateway", ""] {
+        let (status, body) = h
+            .send_as(Method::GET, "/v1/admin/invariants", Some(role), None)
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "role {role:?} must not reach the admin surface"
+        );
+        assert_code(&body, "admin_role_required");
+    }
+}
+
+/// The operator writes are the ones that move money, and the gate must stop them
+/// **before** they execute — not merely report a failure afterwards. Attestation
+/// is the sharpest case: it sets the F1 ceiling that authorizes minting, so a
+/// refusal that still wrote the reserve would be worthless.
+#[tokio::test]
+async fn a_gateless_attestation_does_not_move_the_reserve() {
+    let h = Api::new(1_000);
+
+    let (status, _) = h
+        .send_as(Method::GET, "/v1/admin/reserve", Some("admin"), None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "admin read must work with the header"
+    );
+    let (_, before) = h
+        .send_as(Method::GET, "/v1/admin/reserve", Some("admin"), None)
+        .await;
+
+    let (status, body) = h
+        .send_as(
+            Method::POST,
+            "/v1/admin/attestation",
+            None,
+            Some(json!({ "attested_reserve_minor": 999_999_000_000u64 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_code(&body, "admin_role_required");
+
+    let (_, after) = h
+        .send_as(Method::GET, "/v1/admin/reserve", Some("admin"), None)
+        .await;
+    assert_eq!(
+        before, after,
+        "a refused attestation must leave the reserve untouched"
+    );
+}
+
+/// The gate must not have broken the surface it protects.
+#[tokio::test]
+async fn admin_routes_serve_the_operator_role() {
+    let h = Api::new(1_000);
+
+    let (status, body) = h
+        .send_as(Method::GET, "/v1/admin/invariants", Some("admin"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.get("invariants").is_some() || body.is_array(),
+        "invariant registry must still be served, got: {body}"
+    );
+}
+
+/// The public surface must NOT have inherited the admin gate — it is reached with
+/// a retail JWT and no role header at all.
+#[tokio::test]
+async fn the_public_surface_is_not_behind_the_admin_gate() {
+    let h = Api::new(1_000);
+
+    let (status, body) = h
+        .post(
+            "/v1/exchange/quote/buy",
+            json!({ "grx_atoms": GRX_ATOMS_PER_WHOLE }),
+        )
+        .await;
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "public quote must not require the admin header; body: {body}"
     );
 }
 
@@ -230,7 +386,10 @@ async fn redeeming_zero_is_400_and_persists_no_record() {
     api.fund_user("SCB-1", 1_000, "alice").await;
 
     let (status, body) = api
-        .post("/v1/redemptions", json!({"user": "alice", "amount_minor": 0}))
+        .post(
+            "/v1/redemptions",
+            json!({"user": "alice", "amount_minor": 0}),
+        )
         .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -250,7 +409,10 @@ async fn redeeming_zero_is_400_and_persists_no_record() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["seq"], 1, "the rejected request must not consume a seq");
+    assert_eq!(
+        body["seq"], 1,
+        "the rejected request must not consume a seq"
+    );
 }
 
 /// Redeeming more than the holder owns fails at the token balance, not at F1.
@@ -698,10 +860,7 @@ async fn sell_quote_within_the_grx_vault_succeeds_and_declares_no_supply_change(
 
     let thbc_in = Thb::from_baht(100).unwrap().minor();
     let (status, body) = api
-        .post(
-            "/v1/exchange/quote/sell",
-            json!({"thbc_in_minor": thbc_in}),
-        )
+        .post("/v1/exchange/quote/sell", json!({"thbc_in_minor": thbc_in}))
         .await;
 
     assert_eq!(status, StatusCode::OK);
@@ -812,7 +971,10 @@ async fn redemption_seqs_are_scoped_per_user() {
 
     for user in ["alice", "bob"] {
         let (status, body) = api
-            .post("/v1/redemptions", json!({"user": user, "amount_minor": amount}))
+            .post(
+                "/v1/redemptions",
+                json!({"user": user, "amount_minor": amount}),
+            )
             .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["seq"], 1, "{user} should start at seq 1");
@@ -857,7 +1019,10 @@ async fn a_partial_redemption_leaves_the_remainder_spendable() {
 
     // And one minor unit past zero does not.
     let (status, body) = api
-        .post("/v1/redemptions", json!({"user": "alice", "amount_minor": 1}))
+        .post(
+            "/v1/redemptions",
+            json!({"user": "alice", "amount_minor": 1}),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_code(&body, "invalid_request");

@@ -336,7 +336,7 @@ URL paired with a shared-database migration alias is the worst case and is rejec
 ```bash
 # From the repo root — part of the full stack.
 docker compose up -d thbc-service
-curl localhost:4070/v1/admin/invariants
+curl -H 'x-gridtokenx-user-role: admin' localhost:4070/v1/admin/invariants
 
 # Standalone, no database, no chain:
 docker build -t thbc-service gridtokenx-thbc-service
@@ -362,7 +362,7 @@ be mistaken for live.
 
 ## 9. Test coverage, honestly
 
-`cargo test` — 199 tests, no infrastructure required.
+`cargo test` — 218 tests, no infrastructure required.
 
 | Invariant | §13 asks for | What actually runs |
 | :-- | :-- | :-- |
@@ -398,7 +398,7 @@ signal you get.
 ```bash
 cd gridtokenx-thbc-service
 
-cargo test                  # 199 tests, no infra
+cargo test                  # 218 tests, no infra
 cargo clippy --all-targets -- -D warnings
 
 cp .env.example .env        # then edit
@@ -412,9 +412,9 @@ Never `cargo` from the repo root — each service is its own workspace.
 Worth hitting first:
 
 ```bash
-curl localhost:4008/v1/admin/invariants   # what is actually guaranteed
-curl localhost:4008/v1/admin/reserve      # the F1 ceiling right now
-curl localhost:4008/v1/admin/reconciliation
+curl -H 'x-gridtokenx-user-role: admin' localhost:4008/v1/admin/invariants   # what is actually guaranteed
+curl -H 'x-gridtokenx-user-role: admin' localhost:4008/v1/admin/reserve      # the F1 ceiling right now
+curl -H 'x-gridtokenx-user-role: admin' localhost:4008/v1/admin/reconciliation
 ```
 
 ---

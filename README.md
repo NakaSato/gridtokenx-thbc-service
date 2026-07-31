@@ -58,7 +58,7 @@ F6 (code fixed, but legacy GRX-backed supply may be outstanding).
 The authoritative, machine-readable status is:
 
 ```bash
-curl localhost:4008/v1/admin/invariants
+curl -H 'x-gridtokenx-user-role: admin' localhost:4008/v1/admin/invariants
 ```
 
 ---
@@ -67,7 +67,7 @@ curl localhost:4008/v1/admin/invariants
 
 ```bash
 cd gridtokenx-thbc-service
-cargo test                                  # 199 tests, no infrastructure needed
+cargo test                                  # 218 tests, no infrastructure needed
 
 cp .env.example .env
 THBC_LEDGER_MODE=simulated \
@@ -90,7 +90,7 @@ curl -X POST localhost:4008/v1/partner/webhooks/deposit \
 # Same call again → 200 {"status":"already_issued", ...}   no second issuance
 
 # The reserve, and the F1 ceiling right now
-curl localhost:4008/v1/admin/reserve
+curl -H 'x-gridtokenx-user-role: admin' localhost:4008/v1/admin/reserve
 
 # Redeem. Note the response says "escrowed", never "redeemed".
 curl -X POST localhost:4008/v1/redemptions \
@@ -108,7 +108,7 @@ curl -X POST localhost:4008/v1/redemptions/alice/1/reclaim
 ```bash
 # As part of the stack, from the superproject root
 docker compose up -d thbc-service
-curl localhost:4070/v1/admin/invariants
+curl -H 'x-gridtokenx-user-role: admin' localhost:4070/v1/admin/invariants
 
 # Standalone — no database, no chain, nothing to set up
 docker build -t thbc-service .

@@ -4,15 +4,24 @@
 //!
 //! | Router | Gateway auth | Trust |
 //! |---|---|---|
-//! | [`public`] | JWT | authenticated user; holds their own keys (F8) |
+//! | [`public`] | IAM JWT | authenticated user; holds their own keys (F8) |
 //! | [`partner`] | mTLS + client-cert allowlist | **untrusted input** — see the module doc |
-//! | [`admin`] | SSO + MFA + 4-eyes | operators, plus the `E` regulator read surface |
+//! | [`admin`] | IAM JWT with `role == "admin"` **+ internal CIDRs only** | operators, plus the `E` regulator read surface |
 //!
 //! Authentication is terminated at the gateway (APISIX), not here. This crate does
 //! not verify JWTs or client certificates, and mounting these routers on a
 //! publicly-reachable port without that gateway in front exposes the admin surface.
-//! The one check kept in-process is the partner webhook signature header, because it
-//! binds to the message rather than to the connection.
+//! Two checks are kept in-process, and neither is authentication:
+//!
+//! - the partner webhook signature header, because it binds to the message rather
+//!   than to the connection; and
+//! - [`admin::require_admin_role`], a fail-closed assertion that the gateway's
+//!   admin gate actually ran. It catches a misrouted path, not an attacker — the
+//!   header is forgeable by anyone who can address the service directly.
+//!
+//! **The admin surface is single-factor.** IAM has no MFA, so this is not the
+//! "SSO + MFA + 4-eyes" spec §9 asks for; the gap is recorded on F9 in
+//! [`thbc_core::invariant`].
 //!
 //! Handlers are thin: parse, call a service, map the result. Every invariant decision
 //! is made in `thbc-core` and sequenced in `thbc-logic`.

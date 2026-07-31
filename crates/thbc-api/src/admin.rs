@@ -1,6 +1,22 @@
 //! `admin-api` — operations plus the `E` regulator read surface (spec §9).
 //!
-//! Gated at the gateway by SSO + MFA + 4-eyes. Two audiences with different rights:
+//! # How this surface is actually gated
+//!
+//! Spec §9 asks for SSO + MFA + 4-eyes. What is deployed is **IAM + network
+//! scope**, and the difference is disclosed rather than smoothed over:
+//!
+//! | Gate | Where | What it stops |
+//! |---|---|---|
+//! | IAM-issued JWT, `role == "admin"` | APISIX `plugin_config 2` | anyone without an operator grant |
+//! | `ip-restriction`, internal CIDRs | APISIX route 61 | that token being used from the internet |
+//! | [`require_admin_role`] | here, in-process | a misrouted path reaching these handlers |
+//!
+//! **IAM has no MFA**, so the token is single-factor, and there is no 4-eyes: one
+//! operator can attest a reserve and confirm a burn alone. That is a real gap
+//! against spec §9 and is recorded as such — do not restate this module as
+//! "SSO + MFA + 4-eyes" because the header says admin.
+//!
+//! Two audiences with different rights:
 //!
 //! - **Operators** — attestation, reconciliation, the redemption queue.
 //! - **`E`, the regulator observer** — read-only. Actor table in spec §3: `E` is
@@ -23,7 +39,62 @@ use tracing::instrument;
 
 use crate::state::{ApiResult, AppState};
 
+/// Header the gateway sets from the JWT's `role` claim once it has verified the
+/// token and the internal-CIDR gate. Overwritten on every admin request by
+/// `apisix.yaml` `plugin_config 2`, so a client-supplied value cannot survive
+/// that route.
+pub const ADMIN_ROLE_HEADER: &str = "x-gridtokenx-user-role";
+
+/// The value [`ADMIN_ROLE_HEADER`] must carry — `iam_core::Role::Admin`'s
+/// `Display`, which is what lands in the JWT claim.
+pub const ADMIN_ROLE: &str = "admin";
+
+/// Fail-closed check that a request arrived through the gateway's admin gate.
+///
+/// # What this is, and what it is not
+///
+/// It is **defense in depth against misrouting**: if a future gateway edit maps a
+/// path onto this router without `plugin_config 2`, these handlers refuse rather
+/// than serving attestation to whoever asked. That failure mode is realistic —
+/// this repo has no CI, so a bad route reaches the running stack unchallenged.
+///
+/// It is **not** authentication, and must never be described as such. The header
+/// is forgeable by anyone who can address the service directly, and
+/// `docker-compose.yml:1100` publishes a host port. Authentication is the JWT at
+/// the gateway; the network gate is `ip-restriction`. This check only asserts
+/// that those ran.
+pub async fn require_admin_role(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, crate::state::ApiError> {
+    let role = request
+        .headers()
+        .get(ADMIN_ROLE_HEADER)
+        .and_then(|v| v.to_str().ok());
+
+    if role != Some(ADMIN_ROLE) {
+        // The path is logged, the header value is not: it is caller-controlled
+        // input and echoing it into logs is a log-injection vector.
+        tracing::warn!(
+            path = %request.uri().path(),
+            header_present = role.is_some(),
+            "admin surface reached without the gateway's admin role assertion"
+        );
+        return Err(crate::state::ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "admin_role_required",
+            "this surface is reachable only through the gateway's admin route",
+        ));
+    }
+    Ok(next.run(request).await)
+}
+
 /// Returns a `Router<AppState>`; the caller supplies the state.
+///
+/// Every route carries [`require_admin_role`] — including the regulator reads.
+/// The reads disclose the reserve, the supply and the reconciliation history;
+/// none of that is public, and `E` reaches them through the same gateway route as
+/// an operator.
 pub fn router() -> Router<AppState> {
     Router::new()
         // Regulator-readable (`E`) — all GET, no custody, no PII.
@@ -35,6 +106,7 @@ pub fn router() -> Router<AppState> {
         .route("/attestation", post(attest))
         .route("/redemptions/confirm", post(confirm_redemption))
         .route("/redemptions/payout", post(process_payout))
+        .layer(axum::middleware::from_fn(require_admin_role))
 }
 
 #[derive(Debug, Serialize)]
