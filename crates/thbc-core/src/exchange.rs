@@ -114,6 +114,7 @@ pub fn quote_grx_for_thbc(
         return Err(CoreError::InsufficientInventory {
             requested: net.minor(),
             available: inventory.thbc.minor(),
+            asset: "THBC",
         });
     }
 
@@ -160,10 +161,12 @@ pub fn quote_thbc_for_grx(
     }
 
     // The GRX vault is finite too; refuse rather than over-draw it.
+    // `asset: "GRX"` — the shortfall here is GRX atoms, not THBC minor units.
     if net > inventory.grx {
         return Err(CoreError::InsufficientInventory {
             requested: net.atoms(),
             available: inventory.grx.atoms(),
+            asset: "GRX",
         });
     }
 
@@ -234,8 +237,35 @@ mod tests {
             err,
             CoreError::InsufficientInventory {
                 requested: 11_970_000,
-                available: 1_000_000
+                available: 1_000_000,
+                asset: "THBC"
             }
+        );
+    }
+
+    /// A GRX shortfall must say GRX. Regression for a message that hardcoded
+    /// "THBC" on both paths, so a sell blocked by an empty GRX swap vault
+    /// reported a THBC figure — indistinguishable, to an operator, from the
+    /// THBC inventory being empty when it was not.
+    #[test]
+    fn grx_shortfall_names_grx_not_thbc() {
+        let thin = Inventory {
+            grx: Grx::from_atoms(1_000),
+            ..inventory()
+        };
+        let err = quote_thbc_for_grx(Thb::from_minor(12_000_000), &params(), thin).unwrap_err();
+        match &err {
+            CoreError::InsufficientInventory {
+                asset, available, ..
+            } => {
+                assert_eq!(*asset, "GRX", "sell-side shortfall must name GRX");
+                assert_eq!(*available, 1_000, "must report the GRX vault, in atoms");
+            }
+            other => panic!("expected InsufficientInventory, got {other:?}"),
+        }
+        assert!(
+            err.to_string().contains("GRX") && !err.to_string().contains("THBC"),
+            "rendered message must name GRX and not THBC: {err}"
         );
     }
 

@@ -81,11 +81,26 @@ pub enum CoreError {
     TimelockNotExpired { elapsed_secs: i64, delta_secs: i64 },
 
     // ---- F6: backing-set purity ------------------------------------------------
+    /// `asset` names the side that fell short, and the units of `requested` /
+    /// `available` follow it: `"THBC"` → minor units, `"GRX"` → atoms.
+    ///
+    /// It is a field rather than a hardcoded word because BOTH exchange
+    /// directions raise this: a buy runs out of THBC inventory, a sell runs out
+    /// of the GRX swap vault. The message used to say "THBC" unconditionally, so
+    /// a GRX shortfall on the sell path reported a THBC figure — verified
+    /// 2026-08-01 against a live treasury whose THBC inventory held `500_000`
+    /// while the message insisted inventory held 0. That reads as an accounting
+    /// contradiction in the payment leg, which is the last place a misleading
+    /// error should appear.
     #[error(
-        "F6: exchange needs {requested} THBC but platform inventory holds {available} — \
+        "F6: exchange needs {requested} {asset} but platform inventory holds {available} — \
          the exchange path must never mint to cover a shortfall"
     )]
-    InsufficientInventory { requested: u64, available: u64 },
+    InsufficientInventory {
+        requested: u64,
+        available: u64,
+        asset: &'static str,
+    },
 
     #[error("exchange rate is not configured")]
     RateNotSet,
